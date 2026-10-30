@@ -33,6 +33,7 @@ function ign(x, y, t) {
 // ---------------- palettes ----------------
 const PALETTES = [
   { id:'truecolor', name:'Truecolor 24-bit RGB', colors:['#000000','#ffffff'], levels:256 },
+  { id:'ghost', name:'Deep Spirit', colors:['#f2fbff','#060a18'] },
   { id:'bw', name:'1-Bit B/W', colors:['#000000','#ffffff'] },
   { id:'sepia1', name:'1-Bit Sepia', colors:['#2b1d0e','#f5e6c8'] },
   { id:'gb', name:'Game Boy', colors:['#0f380f','#306230','#8bac0f','#9bbc0f'] },
@@ -110,7 +111,7 @@ const KERNELS = {
   'ed-ostrom':  { div:98, taps:[[1,0,13],[2,0,3],[-2,1,4],[-1,1,9],[0,1,17],[1,1,9],[2,1,4],[-2,2,2],[-1,2,5],[0,2,9],[1,2,5],[2,2,2],[-1,3,2],[0,3,3],[1,3,2]] }
 };
 
-// ---------------- algorithm catalogue (63) ----------------
+// ---------------- algorithm catalogue (64) ----------------
 const ALGORITHMS = [
   // 15 error diffusion
   { id:'ed-floyd', group:'Error Diffusion', name:'Floyd–Steinberg' },
@@ -178,6 +179,7 @@ const ALGORITHMS = [
   { id:'spc-threshold', group:'Special', name:'Clean Threshold' },
   { id:'spc-tritone', group:'Special', name:'Tri-Tone Map' },
   { id:'spc-poster', group:'Special', name:'Poster + Grain' },
+  { id:'spc-spirit', group:'Special', name:'Spirit Contour' },
   // 2 custom
   { id:'custom-kernel', group:'Custom', name:'Custom Kernel' },
   { id:'custom-bayer', group:'Custom', name:'Custom Matrix' }
@@ -436,6 +438,78 @@ function paint(ctx, grid, w, h, cell, algo, pal, opts) {
   if (grid.truecolor && TRUE_SHAPE_FALLBACK[algo]) { blockFill(); return; }
 
   switch (algo) {
+    case 'spc-spirit': {
+      // glowing stipple dots + wavy luminance-contour lines on a dark ground
+      const paper = grid.truecolor ? '#04060f' : palCss[palCss.length-1];
+      const ink = grid.truecolor ? '#ffffff' : palCss[0];
+      const t = (opts && opts.time) || 0;
+      ctx.fillStyle = paper; ctx.fillRect(0, 0, W, H);
+      const dotsRect = new Path2D();
+      // dots follow BRIGHTNESS (bright subject = dense glow dots, like the reference)
+      // while edges/waves follow coverage change, so outlines hug the figure
+      // dot sprites: prerendered ink circles in 8 sizes, stamped per coverage bucket
+      // (one giant arc path + fill costs hundreds of ms; stamping is ~10x faster)
+      let sprCache = paint._spirit;
+      if (!sprCache || sprCache.cell !== cell || sprCache.ink !== ink) {
+        sprCache = { cell: cell, ink: ink, sprites: [] };
+        for (let b = 1; b <= 8; b++) {
+          const r = Math.max(0.5, (b/8) * cell * 0.62);
+          const S = Math.max(1, Math.ceil(r*2) + 2);
+          const s = document.createElement('canvas'); s.width = s.height = S;
+          const g2 = s.getContext('2d');
+          g2.fillStyle = ink;
+          g2.beginPath(); g2.arc(S/2, S/2, r, 0, 6.2832); g2.fill();
+          sprCache.sprites[b] = s;
+        }
+        paint._spirit = sprCache;
+      }
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const lum = 1 - grid.cov[y*w+x];
+        if (lum <= 0.03) {
+          // sparse sparkle in the blacks so dark grounds aren't pure voids
+          if (hash2(x, y, 7) < 0.06) {
+            const s = sprCache.sprites[1];
+            ctx.drawImage(s, Math.round(x*cell + cell/2 - s.width/2), Math.round(y*cell + cell/2 - s.height/2));
+          }
+          continue;
+        }
+        const b = Math.min(8, (lum*8)|0 + 1);
+        if (b <= 3) {
+          // tiny dots: batch as rects into one path (single fill, very fast)
+          const s = Math.max(1, Math.round(b/8 * cell * 1.24));
+          dotsRect.rect(Math.round(x*cell + (cell-s)/2), Math.round(y*cell + (cell-s)/2), s, s);
+        } else {
+          const s = sprCache.sprites[b];
+          ctx.drawImage(s, Math.round(x*cell + cell/2 - s.width/2), Math.round(y*cell + cell/2 - s.height/2));
+        }
+      }
+      ctx.fillStyle = ink; ctx.fill(dotsRect);
+      const faint = new Path2D(), bright = new Path2D();
+      const wobPhase = t*2.2;
+      for (let y = 0; y < h; y++) {
+        let openF = false, openB = false;
+        // step 2: lineTo interpolates fine, halves path API calls
+        for (let x = 0; x <= w; x += 2) {
+          const xc = x < w ? x : w-1;
+          const c = grid.cov[y*w+xc];
+          const cn = grid.cov[y*w+(xc+1 < w ? xc+1 : xc)];
+          const e = cn >= c ? cn - c : c - cn;
+          const wob = Math.sin(x*0.5 + y*0.35 + wobPhase) * cell * 0.35 * (1.25 - c);
+          const yy = y*cell + cell/2 + wob;
+          const wantF = e >= 0.035 && e < 0.20, wantB = e >= 0.20;
+          if (wantB) { if (!openB) { bright.moveTo(x*cell, yy); openB = true; } else bright.lineTo(x*cell, yy); }
+          else openB = false;
+          if (wantF) { if (!openF) { faint.moveTo(x*cell, yy); openF = true; } else faint.lineTo(x*cell, yy); }
+          else openF = false;
+        }
+      }
+      ctx.strokeStyle = ink;
+      ctx.lineWidth = Math.max(1, cell*0.28);
+      ctx.globalAlpha = 0.30; ctx.stroke(faint);
+      ctx.globalAlpha = 0.8; ctx.stroke(bright);
+      ctx.globalAlpha = 1;
+      return;
+    }
     case 'spc-halfdot':
     case 'spc-cmyk':
     case 'spc-rosette': {

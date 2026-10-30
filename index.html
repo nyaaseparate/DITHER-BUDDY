@@ -1,134 +1,291 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dither Buddy — Free Retro Dithering Studio</title>
-<meta name="description" content="A free in-browser dithering studio: 63 dithering algorithms, truecolor + retro palettes, dither layers, stackable effects, video + timeline, PNG/JPG/SVG export. No install, no subscription.">
-</head>
-<body>
 <style>
   :root {
-    --bg: #0b0e14; --panel: #121724; --panel2: #0e1320; --line: #232c44;
-    --ink: #e8ecf6; --dim: #9aa5c0; --acc: #c8ff3d; --acc2: #ff5da2;
+    --bg0: #05070c; --bg1: #090d16;
+    --surface: rgba(255, 255, 255, 0.032);
+    --surface-2: rgba(255, 255, 255, 0.055);
+    --border: rgba(255, 255, 255, 0.09);
+    --border-soft: rgba(255, 255, 255, 0.055);
+    --text-1: #f2f5fa; --text-2: #a6b1c6; --text-3: #69748c;
+    --brand: #c8ff3d; --brand-ink: #16210a; --brand-dim: rgba(200, 255, 61, 0.12);
+    --pink: #ff5da2; --blue: #7cc4ff;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --r-lg: 14px; --r-md: 10px; --r-sm: 8px;
+    --shadow: 0 10px 32px rgba(0, 0, 0, 0.42);
+    --ring: 0 0 0 3px rgba(200, 255, 61, 0.16);
   }
   * { box-sizing: border-box; }
-  body { background: var(--bg); color: var(--ink); font-family: Inter, system-ui, sans-serif; text-align: left; margin: 0; }
-  .topbar {
-    display: flex; align-items: center; gap: 12px; padding: 10px 16px;
-    background: linear-gradient(180deg, #161c2e, #0e1320);
-    border-bottom: 2px solid var(--acc); position: sticky; top: 0; z-index: 50; flex-wrap: wrap;
+  html { color-scheme: dark; }
+  [hidden] { display: none !important; }
+  ::selection { background: rgba(200, 255, 61, 0.28); }
+  body {
+    background: linear-gradient(180deg, #0b0e15, #07090e 60%);
+    color: var(--text-1); font-family: var(--sans);
+    text-align: left; margin: 0; min-height: 100vh; font-size: 14px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
   }
-  .logo { width: 30px; height: 30px; image-rendering: pixelated;
-    background:
-      conic-gradient(from 0deg, var(--acc) 0 25%, transparent 0 50%, var(--acc2) 0 75%, transparent 0);
-    background-size: 15px 15px; border: 2px solid var(--acc); border-radius: 6px; }
-  .brand h1 { font-family: var(--mono); font-size: 18px; margin: 0; letter-spacing: 2px; }
-  .brand h1 b { color: var(--acc); }
-  .brand p { margin: 0; font-size: 11px; color: var(--dim); letter-spacing: 1px; }
-  .topactions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+  /* ---------- top bar ---------- */
+  .topbar {
+    display: flex; align-items: center; gap: 14px; padding: 10px 18px;
+    background: #0a0d13;
+    border-bottom: 1px solid var(--border-soft); position: sticky; top: 0; z-index: 50; flex-wrap: wrap;
+  }
+  .logo {
+    width: 32px; height: 32px; image-rendering: pixelated; flex: 0 0 auto;
+    background: conic-gradient(from 0deg, var(--brand) 0 25%, transparent 0 50%, var(--pink) 0 75%, transparent 0);
+    background-size: 16px 16px; border: 1px solid rgba(200, 255, 61, 0.4); border-radius: 9px;
+    box-shadow: 0 2px 14px rgba(200, 255, 61, 0.18);
+  }
+  .brand h1 { font-family: var(--mono); font-size: 15px; margin: 0; letter-spacing: 2.5px; font-weight: 800; }
+  .brand h1 b { color: var(--brand); }
+  .brand p { margin: 1px 0 0; font-size: 9.5px; color: var(--text-3); letter-spacing: 1.6px; font-weight: 600; }
+  .topactions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .tagroup {
+    display: flex; gap: 5px; align-items: center; padding: 4px;
+    background: var(--surface); border: 1px solid var(--border-soft); border-radius: 12px;
+    flex-wrap: wrap; min-width: 0; max-width: 100%;
+  }
+  .tagroup select { border: none; background: transparent; }
   button, select, input[type=text] { font-family: inherit; }
   .btn {
-    background: #1b2340; color: var(--ink); border: 1px solid var(--line);
-    padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;
+    appearance: none; background: var(--surface-2); color: var(--text-1);
+    border: 1px solid transparent; padding: 7px 12px; border-radius: 9px;
+    cursor: pointer; font-size: 12.5px; font-weight: 600; letter-spacing: 0.1px; white-space: nowrap;
+    transition: background 0.15s, border-color 0.15s, transform 0.05s, box-shadow 0.15s;
   }
-  .btn:hover { border-color: var(--acc); }
-  .btn.primary { background: var(--acc); color: #10140a; border-color: var(--acc); }
-  .btn.primary:hover { filter: brightness(1.1); }
-  .btn.rec { background: #ff3b3b; border-color: #ff3b3b; color: #fff; animation: blink 1s infinite; }
-  @keyframes blink { 50% { opacity: 0.6; } }
-  .presets { display: flex; gap: 8px; padding: 10px 16px; overflow-x: auto; background: var(--panel2); border-bottom: 1px solid var(--line); }
+  .tagroup .btn { background: transparent; border-radius: 8px; }
+  .btn:hover { background: rgba(255, 255, 255, 0.1); border-color: var(--border); }
+  .tagroup .btn:hover { background: rgba(255, 255, 255, 0.08); border-color: transparent; }
+  .btn:active { transform: translateY(1px); }
+  .btn:focus-visible, .mini:focus-visible, .algo:focus-visible, .pal:focus-visible, .preset:focus-visible,
+  .num:focus-visible, select:focus-visible, input[type=text]:focus-visible {
+    outline: none; box-shadow: var(--ring); border-color: rgba(200, 255, 61, 0.55) !important;
+  }
+  .btn.primary { background: var(--brand); color: var(--brand-ink); box-shadow: 0 3px 18px rgba(200, 255, 61, 0.28); }
+  .btn.primary:hover { background: #d6ff5e; border-color: transparent; }
+  .btn.rec { background: #ff4545; border-color: #ff4545; color: #fff; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: 0.55; } }
+  select {
+    background: transparent; color: var(--text-1); border: 1px solid transparent;
+    border-radius: 8px; padding: 7px 8px; font-size: 12.5px; font-weight: 600; max-width: 100%; cursor: pointer;
+  }
+  select option { background: #101623; }
+  /* ---------- presets ---------- */
+  .presets {
+    display: flex; gap: 7px; padding: 10px 18px; overflow-x: auto;
+    background: transparent; border-bottom: 1px solid var(--border-soft);
+    scrollbar-width: thin; mask-image: linear-gradient(90deg, #000 96%, transparent);
+  }
   .preset {
-    background: #1a2140; border: 1px solid var(--line); color: var(--ink);
-    padding: 7px 14px; border-radius: 20px; cursor: pointer; white-space: nowrap; font-size: 12px; font-weight: 700;
+    background: var(--surface); border: 1px solid var(--border-soft); color: var(--text-2);
+    padding: 6px 14px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+    font-size: 12px; font-weight: 650; transition: all 0.15s;
   }
-  .preset:hover { border-color: var(--acc2); color: var(--acc); }
-  .preset.active { border-color: var(--acc); color: var(--acc); background: #24304f; }
-  .layout { display: grid; grid-template-columns: 290px 1fr 320px; gap: 12px; padding: 12px 16px; align-items: start; max-width: 1800px; margin: 0 auto; }
-  .layout > aside, .layout > section { min-width: 0; min-height: 0; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
-  .card h2 { font-family: var(--mono); font-size: 12px; letter-spacing: 2px; color: var(--acc); margin: 0 0 10px; text-transform: uppercase; }
-  .row { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 13px; }
-  .row label { flex: 0 0 118px; color: var(--dim); font-size: 12px; }
-  .row output { flex: 0 0 52px; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--acc); }
-  input[type=range] { flex: 1; accent-color: var(--acc); min-width: 60px; }
-  select { background: #1b2340; color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px; font-size: 13px; max-width: 100%; }
-  .btnrow { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
-  .btnrow .btn { flex: 1 1 auto; white-space: nowrap; }
-  .mini { background: #1b2340; border: 1px solid var(--line); color: var(--ink); border-radius: 6px; cursor: pointer; padding: 2px 7px; font-size: 12px; }
-  .mini:hover { border-color: var(--acc); }
+  .preset:hover { color: var(--text-1); border-color: var(--border); background: var(--surface-2); }
+  .preset.active { color: var(--brand); border-color: rgba(200, 255, 61, 0.5); background: var(--brand-dim); }
+  /* ---------- layout ---------- */
+  .layout {
+    display: grid; grid-template-columns: 292px minmax(0, 1fr) 332px; gap: 14px;
+    padding: 14px 18px 40px; align-items: start; max-width: 1760px; margin: 0 auto;
+  }
+  .layout > aside, .layout > section { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 14px; }
+  .card {
+    background: #10141c;
+    border: 1px solid var(--border-soft); border-radius: var(--r-lg);
+    padding: 14px 14px 12px; margin-bottom: 0; box-shadow: var(--shadow);
+  }
+  .card h2 {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 2.2px; color: var(--text-2);
+    margin: 0 0 10px; text-transform: uppercase; display: flex; align-items: center; gap: 8px; font-weight: 700;
+  }
+  .card h2::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--brand); box-shadow: 0 0 8px rgba(200, 255, 61, 0.8); flex: 0 0 auto;
+  }
+  .row { display: flex; align-items: center; gap: 6px; margin: 8px 0; font-size: 13px; min-width: 0; }
+  .row label { flex: 0 0 92px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: 11.5px; font-weight: 500; }
+  .row output { flex: 0 0 52px; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--brand); }
+  .num {
+    flex: 0 0 54px; width: 54px; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--border-soft);
+    color: var(--text-1); border-radius: var(--r-sm); font-family: var(--mono); font-size: 12px;
+    padding: 5px 4px; text-align: right; transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .num:hover { border-color: var(--border); }
+  .num:focus { border-color: rgba(200, 255, 61, 0.55); outline: none; box-shadow: var(--ring); }
+  .unit { flex: 0 0 auto; color: var(--text-3); font-size: 10px; font-family: var(--mono); min-width: 14px; }
+  input[type=range] { -webkit-appearance: none; appearance: none; flex: 1 1 auto; min-width: 40px; height: 22px; background: transparent; cursor: pointer; accent-color: var(--brand); }
+  input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 999px; background: rgba(255, 255, 255, 0.14); }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border-radius: 50%;
+    background: var(--brand); border: 3px solid #1a2407; box-shadow: 0 1px 8px rgba(200, 255, 61, 0.45);
+  }
+  input[type=range]::-moz-range-track { height: 4px; border-radius: 999px; background: rgba(255, 255, 255, 0.14); }
+  input[type=range]::-moz-range-thumb { width: 9px; height: 9px; border-radius: 50%; background: var(--brand); border: 3px solid #1a2407; }
+  input[type=checkbox] { accent-color: var(--brand); width: 16px; height: 16px; cursor: pointer; flex: 0 0 auto; }
+  input[type=color] { cursor: pointer; }
+  input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+  .topactions { min-width: 0; }
+  .tagroup { min-width: 0; max-width: 100%; }
+  .layout { overflow: clip; }
+  .btnrow { display: flex; gap: 6px; flex-wrap: wrap; margin: 7px 0; }
+  .btnrow .btn { flex: 1 1 auto; white-space: nowrap; padding: 7px 6px; font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .mini {
+    background: var(--surface-2); border: 1px solid var(--border-soft); color: var(--text-1);
+    border-radius: 7px; cursor: pointer; padding: 3px 7px; font-size: 12px; line-height: 1.6; transition: all 0.12s;
+    flex: 0 0 auto;
+  }
+  .mini:hover { border-color: rgba(200, 255, 61, 0.5); color: var(--brand); }
   .mini.danger:hover { border-color: #ff5d5d; color: #ff5d5d; }
-  #algoSearch { width: 100%; background: #0b0f1c; border: 1px solid var(--line); color: var(--ink); border-radius: 8px; padding: 8px 10px; font-size: 13px; margin-bottom: 8px; }
-  #algoList { max-height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; padding-right: 4px; }
-  .agroup { font-family: var(--mono); font-size: 10px; letter-spacing: 2px; color: var(--acc2); margin: 8px 0 2px; text-transform: uppercase; }
-  .algo { text-align: left; background: transparent; border: 1px solid transparent; color: var(--ink); padding: 6px 9px; border-radius: 7px; cursor: pointer; font-size: 13px; }
-  .algo:hover { background: #1b2340; }
-  .algo.sel { background: #24304f; border-color: var(--acc); color: var(--acc); font-weight: 700; }
-  #paletteGrid { display: flex; flex-direction: column; gap: 5px; max-height: 300px; overflow-y: auto; }
-  .pal { display: flex; align-items: center; gap: 8px; background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 5px 7px; cursor: pointer; color: var(--ink); width: 100%; max-width: 100%; box-sizing: border-box; text-align: left; }
-  .pal:hover { background: #1b2340; }
-  .pal.sel { border-color: var(--acc); background: #1a2440; }
-  .swatches { display: flex; flex: 1 1 auto; min-width: 0; }
-  .swatches i { flex: 1 1 0; min-width: 5px; width: auto; height: 16px; display: block; border: 1px solid rgba(0,0,0,.5); }
-  .swatches i:first-child { border-radius: 4px 0 0 4px; }
-  .swatches i:last-child { border-radius: 0 4px 4px 0; }
-  .palname { font-size: 12px; color: var(--dim); flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pal.sel .palname { color: var(--acc); }
-  .crow { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
-  .crow input[type=color] { width: 40px; height: 26px; border: none; background: none; padding: 0; cursor: pointer; }
-  .chex { font-family: var(--mono); font-size: 12px; color: var(--dim); flex: 1; }
+  /* ---------- algorithm list ---------- */
+  #algoSearch {
+    width: 100%; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--border-soft); color: var(--text-1);
+    border-radius: var(--r-md); padding: 9px 12px 9px 32px; font-size: 13px; margin-bottom: 8px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2369748c' stroke-width='2.4'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M21 21l-4.3-4.3'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: 10px center; transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  #algoSearch::placeholder { color: var(--text-3); }
+  #algoSearch:focus { border-color: rgba(200, 255, 61, 0.55); outline: none; box-shadow: var(--ring); }
+  #algoList { max-height: 372px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; padding-right: 2px; overscroll-behavior: contain; }
+  .agroup {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: 2.2px; font-weight: 700;
+    color: var(--text-3); margin: 12px 2px 4px; text-transform: uppercase;
+  }
+  .agroup:first-child { margin-top: 2px; }
+  .algo {
+    text-align: left; background: transparent; border: 1px solid transparent; color: var(--text-2);
+    padding: 6px 10px 6px 12px; border-radius: 8px; cursor: pointer; font-size: 12.8px; font-weight: 500;
+    transition: background 0.1s, color 0.1s; position: relative;
+  }
+  .algo:hover { background: rgba(255, 255, 255, 0.06); color: var(--text-1); }
+  .algo.sel { background: var(--brand-dim); color: var(--brand); font-weight: 700; box-shadow: inset 2px 0 0 var(--brand); border-radius: 0 8px 8px 0; }
+  /* ---------- palettes ---------- */
+  #paletteGrid { display: flex; flex-direction: column; gap: 4px; max-height: 296px; overflow-y: auto; overscroll-behavior: contain; }
+  .pal {
+    display: flex; align-items: center; gap: 10px; background: transparent;
+    border: 1px solid transparent; border-radius: var(--r-md); padding: 6px 8px; cursor: pointer;
+    color: var(--text-1); width: 100%; max-width: 100%; box-sizing: border-box; text-align: left; transition: background 0.12s;
+  }
+  .pal:hover { background: rgba(255, 255, 255, 0.05); }
+  .pal.sel { border-color: rgba(200, 255, 61, 0.5); background: var(--brand-dim); }
+  .swatches { display: flex; flex: 1 1 auto; min-width: 0; border-radius: 6px; overflow: hidden; }
+  .swatches i { flex: 1 1 0; min-width: 5px; width: auto; height: 17px; display: block; }
+  .swatches.spectrum { flex: 1 1 auto; min-width: 40px; border-radius: 6px; background: linear-gradient(90deg,#ff0000,#ffff00,#00ff00,#00ffff,#0000ff,#ff00ff,#ff0000); }
+  .palname { font-size: 12px; color: var(--text-2); font-weight: 600; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 118px; }
+  .pal.sel .palname { color: var(--brand); }
+  .crow { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+  .crow input[type=color] { width: 40px; height: 26px; border: 1px solid var(--border); border-radius: 7px; background: rgba(0,0,0,.3); padding: 2px; cursor: pointer; }
+  .chex { font-family: var(--mono); font-size: 12px; color: var(--text-2); flex: 1; }
   #customList { max-height: 190px; overflow-y: auto; }
-  textarea { width: 100%; background: #0b0f1c; color: var(--acc); border: 1px solid var(--line); border-radius: 8px; font-family: var(--mono); font-size: 13px; padding: 8px; }
-  .stackempty { color: var(--dim); font-size: 12px; padding: 6px 2px; font-style: italic; }
-  .fx { display: flex; align-items: center; gap: 6px; background: #0e1424; border: 1px solid var(--line); border-radius: 8px; padding: 6px; margin: 5px 0; }
-  .fx.off { opacity: 0.45; }
-  .fx .lname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 700; color: var(--ink); }
-  .swatches.spectrum { flex: 1 1 auto; min-width: 40px; border-radius: 4px; background: linear-gradient(90deg,#ff0000,#ffff00,#00ff00,#00ffff,#0000ff,#ff00ff,#ff0000); }
-  .fxname { flex: 0 0 86px; font-size: 11px; font-weight: 700; color: var(--ink); }
-  .fx input[type=range] { min-width: 40px; }
-  .fxval { flex: 0 0 34px; font-family: var(--mono); font-size: 11px; color: var(--acc); text-align: right; }
-  .stagecard { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
-  .stagetool { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; font-size: 13px; }
-  #algoName { font-family: var(--mono); font-weight: 700; color: var(--acc); }
-  .muted { color: var(--dim); font-size: 12px; font-family: var(--mono); }
-  .badge { font-size: 10px; font-weight: 800; letter-spacing: 1px; background: var(--acc2); color: #14060d; border-radius: 5px; padding: 3px 7px; }
-  .grip { cursor: grab; color: var(--dim); margin-right: 8px; user-select: none; -webkit-user-select: none; touch-action: none; font-size: 11px; letter-spacing: 1px; }
-  .grip:hover { color: var(--acc); }
-  .panel-ph { border: 2px dashed var(--acc); border-radius: 12px; margin-bottom: 12px; }
-  .panel-ghost { position: fixed; z-index: 200; pointer-events: none; opacity: 0.93; box-shadow: 0 12px 40px rgba(0,0,0,.65); margin: 0 !important; }
-  .zoomrow { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
-  .zoomrow .btn { padding: 5px 11px; font-size: 12px; }
-  .zoomrow .btn.active { border-color: var(--acc); color: var(--acc); }
-  #zoomLabel { min-width: 76px; }
-  #stageWrap { position: relative; background: repeating-conic-gradient(#141a2c 0 25%, #0d1220 0 50%) 0 0 / 22px 22px; border-radius: 10px; height: clamp(340px, 58vh, 660px); display: flex; overflow: auto; cursor: grab; width: 100%; max-width: 100%; box-sizing: border-box; }
+  textarea {
+    width: 100%; background: rgba(0, 0, 0, 0.35); color: var(--brand); border: 1px solid var(--border-soft);
+    border-radius: var(--r-md); font-family: var(--mono); font-size: 12.5px; padding: 9px; resize: vertical; line-height: 1.6;
+  }
+  textarea:focus { border-color: rgba(200, 255, 61, 0.55); outline: none; box-shadow: var(--ring); }
+  .stackempty { color: var(--text-3); font-size: 12px; padding: 8px 2px; font-style: italic; text-align: center; border: 1px dashed var(--border); border-radius: var(--r-md); }
+  .fx {
+    display: flex; align-items: center; gap: 5px; background: rgba(0, 0, 0, 0.28);
+    border: 1px solid var(--border-soft); border-radius: var(--r-md); padding: 7px 8px; margin: 6px 0; min-width: 0;
+  }
+  .fx.off { opacity: 0.42; }
+  .fx .lname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 700; color: var(--text-1); }
+  .fxname { flex: 0 0 64px; min-width: 0; font-size: 11px; font-weight: 700; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fx input[type=range] { min-width: 30px; }
+  .fxval { flex: 0 0 30px; font-family: var(--mono); font-size: 11px; color: var(--brand); text-align: right; }
+  input.fxval {
+    flex: 0 0 42px; width: 42px; background: rgba(0, 0, 0, 0.4); border: 1px solid var(--border-soft);
+    border-radius: 6px; padding: 3px 4px; color: var(--text-1); font-family: var(--mono); font-size: 11px; text-align: right;
+  }
+  input.fxval:focus { border-color: rgba(200, 255, 61, 0.55); outline: none; }
+  /* ---------- stage ---------- */
+  .stagecard {
+    background: #10141c;
+    border: 1px solid var(--border-soft); border-radius: 18px; padding: 14px; box-shadow: var(--shadow);
+    position: sticky; top: 12px;
+  }
+  .stagetool { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; flex-wrap: wrap; font-size: 13px; min-width: 0; }
+  #algoName { font-weight: 800; color: var(--text-1); font-size: 14.5px; letter-spacing: -0.1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .stagemeta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 10px; min-width: 0; }
+  .stagemeta .muted, .stagemeta span.muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  #algoCount { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .muted { color: var(--text-3); font-size: 11.5px; font-family: var(--mono); }
+  .badge { font-size: 9.5px; font-weight: 800; letter-spacing: 1.2px; background: var(--pink); color: #18060f; border-radius: 6px; padding: 3px 8px; }
+  .grip, .panel-ph, .panel-ghost { display: none !important; }
+  .zoomrow { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; min-width: 0; }
+  .zoomrow .btn { padding: 5px 12px; font-size: 12px; border-radius: 999px; border-color: var(--border-soft); }
+  .zoomrow .btn.active { border-color: rgba(200, 255, 61, 0.55); color: var(--brand); background: var(--brand-dim); }
+  #zoomLabel { min-width: 70px; }
+  #stageWrap {
+    position: relative; background:
+      repeating-conic-gradient(rgba(255, 255, 255, 0.035) 0 25%, transparent 0 50%) 0 0 / 22px 22px,
+      #070a11;
+    border: 1px solid var(--border-soft); border-radius: var(--r-lg);
+    height: clamp(360px, 60vh, 680px); display: flex; overflow: auto; cursor: grab;
+    width: 100%; max-width: 100%; box-sizing: border-box;
+  }
   #stageWrap.panning { cursor: grabbing; }
-  #stageCanvas { margin: auto; flex: 0 0 auto; image-rendering: pixelated; border-radius: 6px; }
+  #stageCanvas { margin: auto; flex: 0 0 auto; image-rendering: pixelated; border-radius: 10px; box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55); }
   #stageWrap.zoomed #stageCanvas { margin: 0; }
-  /* global slim theme scrollbars */
-  * { scrollbar-width: thin; scrollbar-color: #2c3a5e transparent; }
-  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  #splitDiv {
+    position: absolute; top: 0; bottom: 0; width: 0; z-index: 5; cursor: ew-resize;
+    border-left: 2px solid rgba(255, 255, 255, 0.85); box-shadow: 0 0 0 1px rgba(0,0,0,.6);
+  }
+  #splitDiv::after {
+    content: "◂ ▸"; position: absolute; top: 12px; left: -19px; width: 38px; text-align: center;
+    background: #fff; color: #111; font-size: 10px; font-weight: 800;
+    border-radius: 999px; padding: 3px 0; box-shadow: 0 2px 10px rgba(0,0,0,.55);
+  }
+  * { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.16) transparent; }
+  *::-webkit-scrollbar { width: 9px; height: 9px; }
   *::-webkit-scrollbar-track { background: transparent; }
-  *::-webkit-scrollbar-thumb { background: #2c3a5e; border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
-  *::-webkit-scrollbar-thumb:hover { background: var(--acc); border: 2px solid transparent; background-clip: content-box; }
+  *::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+  *::-webkit-scrollbar-thumb:hover { background: rgba(200, 255, 61, 0.5); border: 2px solid transparent; background-clip: content-box; }
   *::-webkit-scrollbar-corner { background: transparent; }
-  #emptyState { margin: auto; }
-  #emptyState { text-align: center; padding: 40px 20px; color: var(--dim); }
-  #emptyState .big { font-size: 44px; margin-bottom: 8px; }
-  #timelineWrap { display: flex; align-items: center; gap: 10px; margin-top: 10px; background: #0e1424; border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+  #emptyState { margin: auto; text-align: center; padding: 36px 26px; color: var(--text-2); max-width: 480px; }
+  #emptyState .big {
+    font-size: 30px; margin: 0 auto 14px; display: flex; align-items: center; justify-content: center;
+    background: var(--brand-dim); border: 1px solid rgba(200, 255, 61, 0.35);
+    width: 72px; height: 72px; border-radius: 20px; color: var(--brand);
+  }
+  #emptyState b { color: var(--text-1); }
+  #emptyState .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0; }
+  #emptyState .step {
+    background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--r-md);
+    padding: 10px 8px; font-size: 11.5px; color: var(--text-2);
+  }
+  #emptyState .step b { display: block; color: var(--brand); font-family: var(--mono); font-size: 10px; letter-spacing: 1px; margin-bottom: 3px; }
+  #timelineWrap { display: flex; align-items: center; gap: 10px; margin-top: 10px; background: rgba(0, 0, 0, 0.3); border: 1px solid var(--border-soft); border-radius: 12px; padding: 9px 12px; }
   #scrubRange { flex: 1; }
   #toast {
-    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
-    background: #101828; border: 1px solid var(--acc); color: var(--ink);
-    padding: 10px 18px; border-radius: 10px; font-size: 13px; z-index: 99;
-    box-shadow: 0 6px 30px rgba(0,0,0,.5);
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: rgba(16, 21, 32, 0.96);
+    border: 1px solid var(--border); color: var(--text-1);
+    padding: 9px 18px; border-radius: 10px; font-size: 12.5px; font-weight: 600; z-index: 99;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55); max-width: min(92vw, 560px); text-align: center;
+    pointer-events: none;
   }
-  .about { font-size: 12px; color: var(--dim); line-height: 1.6; }
-  .about b { color: var(--ink); }
-  .kbd { font-family: var(--mono); background: #1b2340; padding: 1px 6px; border-radius: 5px; font-size: 11px; }
+  .about { font-size: 12px; color: var(--text-2); line-height: 1.6; }
+  .about b { color: var(--text-1); }
+  .kbd { font-family: var(--mono); background: rgba(255,255,255,.08); border: 1px solid var(--border-soft); border-bottom-width: 2px; padding: 1px 6px; border-radius: 6px; font-size: 11px; }
+  @media (max-width: 1180px) {
+    .layout { grid-template-columns: 260px minmax(0, 1fr) 300px; padding: 12px 12px 32px; }
+    .stagecard { top: 12px; }
+  }
   @media (max-width: 1080px) {
     .layout { grid-template-columns: 1fr; }
+    .layout > section { order: -1; }
+    .stagecard { position: static; }
     #algoList { max-height: 240px; }
+    .topbar { gap: 10px; }
+  }
+  @media (max-width: 640px) {
+    .topactions { flex-wrap: wrap; max-width: 100%; }
+    .brand p { display: none; }
+    #emptyState .steps { grid-template-columns: 1fr; }
+    .row label { flex-basis: 96px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
   }
 </style>
 
@@ -136,23 +293,31 @@
   <div class="logo"></div>
   <div class="brand">
     <h1>DITHER <b>BUDDY</b></h1>
-    <p>FREE DITHERING STUDIO · 63 ALGORITHMS · NO SIGNUP</p>
+    <p>FREE DITHERING STUDIO · 64 ALGORITHMS · NO SIGNUP</p>
   </div>
   <div class="topactions">
-    <button class="btn primary" id="loadBtn">Open image / video</button>
-    <input type="file" id="loadInput" accept="image/*,video/*,.gif" hidden>
-    <button class="btn" id="exportPngBtn">PNG</button>
-    <button class="btn" id="exportJpgBtn">JPG</button>
-    <button class="btn" id="exportSvgBtn">SVG vector</button>
-    <select id="exportSizeSel" title="Export size">
-      <option value="preview">Export: preview</option>
-      <option value="1k">Export: 1024</option>
-      <option value="2k">Export: 2048</option>
-      <option value="full">Export: full</option>
-    </select>
-    <button class="btn" id="copyBtn">Copy</button>
-    <button class="btn" id="recordBtn">Record WebM</button>
-    <button class="btn" id="motionBtn" title="Toggle shimmer animation for still images">Motion: on</button>
+    <div class="tagroup">
+      <button class="btn primary" id="loadBtn">Open image / video</button>
+      <input type="file" id="loadInput" accept="image/*,video/*,.gif" hidden>
+    </div>
+    <div class="tagroup">
+      <button class="btn" id="exportPngBtn">PNG</button>
+      <button class="btn" id="exportJpgBtn">JPG</button>
+      <button class="btn" id="exportSvgBtn">SVG vector</button>
+      <button class="btn" id="exportTxtBtn" title="Export ASCII art as text (ASCII algorithm)">TXT</button>
+      <select id="exportSizeSel" title="Export size">
+        <option value="preview">Export: preview</option>
+        <option value="1k">Export: 1024</option>
+        <option value="2k">Export: 2048</option>
+        <option value="full">Export: full</option>
+      </select>
+    </div>
+    <div class="tagroup">
+      <button class="btn" id="copyBtn">Copy</button>
+      <button class="btn" id="recordBtn">Record WebM</button>
+      <button class="btn" id="motionBtn" title="Toggle shimmer animation for still images">Motion: on</button>
+      <button class="btn" id="resetBtn" title="Reset all settings to factory defaults">Reset</button>
+    </div>
   </div>
 </div>
 
@@ -181,18 +346,20 @@
 
     <div class="card">
       <h2>Canvas</h2>
-      <div class="row"><label>Detail grid</label><input type="range" id="detailRange" min="80" max="2000" step="10" value="300"><output id="detailVal">300px</output></div>
-      <div class="row"><label>Pixel size</label><input type="range" id="cellRange" min="1" max="12" step="1" value="3"><output id="cellVal">3px</output></div>
+      <div class="row"><label>Detail grid</label><input type="range" id="detailRange" min="80" max="2000" step="10" value="300"><input type="number" class="num" id="detailVal" min="80" max="2000" step="10" value="300"><span class="unit">px</span></div>
+      <div class="row"><label>Pixel size</label><input type="range" id="cellRange" min="1" max="12" step="1" value="3"><input type="number" class="num" id="cellVal" min="1" max="12" step="1" value="3"><span class="unit">px</span></div>
     </div>
 
     <div class="card">
       <h2>Palette</h2>
+      <div class="row"><label>Duotone</label><input type="checkbox" id="duoChk"><input type="color" id="duoDark" value="#000000" title="Shadow color"><input type="color" id="duoLight" value="#ffffff" title="Highlight color"></div>
+      <div class="about" id="duoNote" hidden>Duotone on: dithering between shadow and highlight only.</div>
       <div id="paletteGrid"></div>
       <div id="customWrap" hidden>
         <div id="customList"></div>
         <div class="btnrow"><button class="btn" id="addColorBtn">Add color</button></div>
       </div>
-      <div class="row"><label>Extract count</label><input type="range" id="extractCount" min="2" max="16" step="1" value="8"><output id="extractCountVal">8</output></div>
+      <div class="row"><label>Extract count</label><input type="range" id="extractCount" min="2" max="16" step="1" value="8"><input type="number" class="num" id="extractCountVal" min="2" max="16" step="1" value="8"></div>
       <div class="btnrow">
         <button class="btn" id="extractBtn">Extract from image</button>
       </div>
@@ -209,12 +376,16 @@
     <div class="stagecard">
       <div class="stagetool">
         <span id="algoName">Floyd–Steinberg</span>
-        <span class="muted" id="algoCount"></span>
         <span class="badge" id="vidBadge" hidden>VIDEO</span>
         <span style="flex:1"></span>
+        <button class="btn" id="compareBtn" title="Hold to see the original">Hold: original</button>
+        <button class="btn" id="splitBtn" title="Split view: drag the divider to compare original vs dithered">Split</button>
+      </div>
+      <div class="stagemeta">
+        <span class="muted" id="algoCount"></span>
+        <span class="muted">·</span>
         <span class="muted" id="renderMs"></span>
         <span class="muted" id="resLabel"></span>
-        <button class="btn" id="compareBtn" title="Hold to see the original">Hold: original</button>
       </div>
       <div class="zoomrow">
         <button class="btn" id="zoomOutBtn" title="Zoom out">−</button>
@@ -227,10 +398,16 @@
       </div>
       <div id="stageWrap">
         <canvas id="stageCanvas" hidden></canvas>
+        <div id="splitDiv" hidden title="Drag to compare"></div>
         <div id="emptyState">
           <div class="big">◧</div>
           <p><b>Drop an image or video anywhere to start.</b></p>
-          <p>63 dithering algorithms · retro palettes · stackable effects · video timeline · PNG, JPG, SVG and WebM export. Free forever.</p>
+          <div class="steps">
+            <div class="step"><b>1 · LOAD</b>Drop, paste, or pick a sample</div>
+            <div class="step"><b>2 · DITHER</b>Pick an algorithm + palette</div>
+            <div class="step"><b>3 · EXPORT</b>PNG, JPG, SVG, TXT or WebM</div>
+          </div>
+          <p>64 dithering algorithms · retro palettes · stackable effects · video timeline · PNG, JPG, SVG, TXT and WebM export. Free forever.</p>
         </div>
       </div>
       <div id="timelineWrap" hidden>
@@ -242,7 +419,7 @@
     <div class="card">
       <h2>How it works</h2>
       <div class="about">
-        <b>1.</b> Load anything. <b>2.</b> Pick one of 63 algorithms on the right — error diffusion, ordered Bayer, patterns, glitch slices, halftones, ASCII, stitch. <b>3.</b> Recolor with a built-in palette, your own custom colors, or auto-extracted colors from the image. <b>4.</b> Stack pre-effects and post-effects like Epsilon Glow, Chromatic Aberration, Scanlines and JPEG Glitch — drag them into any order with the arrow buttons. <b>5.</b> Export PNG, JPG, resolution-independent SVG vectors for print and embroidery, or record a WebM clip. Everything runs locally in your browser; nothing is uploaded.
+        <b>1.</b> Load anything. <b>2.</b> Pick one of 64 algorithms on the right — error diffusion, ordered Bayer, patterns, glitch slices, halftones, ASCII, stitch. <b>3.</b> Recolor with a built-in palette, your own custom colors, or auto-extracted colors from the image. <b>4.</b> Stack pre-effects and post-effects like Epsilon Glow, Chromatic Aberration, Scanlines and JPEG Glitch — drag them into any order with the arrow buttons. <b>5.</b> Export PNG, JPG, resolution-independent SVG vectors for print and embroidery, or record a WebM clip. Everything runs locally in your browser; nothing is uploaded.
       </div>
     </div>
   </section>
@@ -250,22 +427,25 @@
   <aside>
     <div class="card">
       <h2>Adjust</h2>
-      <div class="row"><label>Brightness</label><input type="range" id="brightRange" min="-100" max="100" value="0"><output id="brightVal">0</output></div>
-      <div class="row"><label>Contrast</label><input type="range" id="contrRange" min="-100" max="100" value="0"><output id="contrVal">0</output></div>
-      <div class="row"><label>Saturation</label><input type="range" id="satRange" min="0" max="200" value="100"><output id="satVal">100%</output></div>
-      <div class="row"><label>Dither strength</label><input type="range" id="strengthRange" min="0" max="150" value="100"><output id="strengthVal">100%</output></div>
+      <div class="row"><label>Brightness</label><input type="range" id="brightRange" min="-100" max="100" step="1" value="0"><input type="number" class="num" id="brightVal" min="-100" max="100" step="1" value="0"></div>
+      <div class="row"><label>Contrast</label><input type="range" id="contrRange" min="-100" max="100" step="1" value="0"><input type="number" class="num" id="contrVal" min="-100" max="100" step="1" value="0"></div>
+      <div class="row"><label>Saturation</label><input type="range" id="satRange" min="0" max="200" step="1" value="100"><input type="number" class="num" id="satVal" min="0" max="200" step="1" value="100"><span class="unit">%</span></div>
+      <div class="row"><label>Dither strength</label><input type="range" id="strengthRange" min="0" max="150" step="1" value="100"><input type="number" class="num" id="strengthVal" min="0" max="150" step="1" value="100"><span class="unit">%</span></div>
+      <div class="row"><label>Threshold bias</label><input type="range" id="threshRange" min="-100" max="100" step="1" value="0"><input type="number" class="num" id="threshVal" min="-100" max="100" step="1" value="0"></div>
       <div class="row" id="serpRow"><label>Serpentine scan</label><input type="checkbox" id="serpChk" checked></div>
-      <div class="row" id="glitchRow" style="display:none"><label>Glitch amount</label><input type="range" id="glitchRange" min="0" max="100" value="60"><output id="glitchVal">60%</output></div>
+      <div class="row" id="glitchRow" style="display:none"><label>Glitch amount</label><input type="range" id="glitchRange" min="0" max="100" step="1" value="60"><input type="number" class="num" id="glitchVal" min="0" max="100" step="1" value="60"><span class="unit">%</span></div>
       <div class="row"><label>Temporal motion</label><input type="checkbox" id="temporalChk" checked></div>
-      <div class="row"><label>Noise seed</label><input type="range" id="seedRange" min="0" max="99" value="7"><output id="seedVal">7</output></div>
+      <div class="row"><label>Noise seed</label><input type="range" id="seedRange" min="0" max="99" step="1" value="7"><input type="number" class="num" id="seedVal" min="0" max="99" step="1" value="7"></div>
     </div>
 
     <div class="card">
       <h2>Dither algorithm</h2>
-      <input type="text" id="algoSearch" placeholder="Search 63 algorithms…" autocomplete="off">
+      <input type="text" id="algoSearch" placeholder="Search 64 algorithms…" autocomplete="off">
       <div id="algoList"></div>
+      <div class="about" id="kernelInfo"></div>
+      <div class="btnrow"><button class="btn" id="noDitherBtn" title="Turn dithering off and show the adjusted original">Original · no dither</button></div>
       <div id="kernelWrap" hidden>
-        <div class="row"><label>Kernel divisor</label><input type="range" id="kernelDiv" min="1" max="128" value="16"><output id="kernelDivVal"></output></div>
+        <div class="row"><label>Kernel divisor</label><input type="range" id="kernelDiv" min="1" max="128" step="1" value="16"><input type="number" class="num" id="kernelDivVal" min="1" max="128" step="1" value="16"></div>
         <div class="about">Weights for future taps, current pixel is the middle of row 2. Diffusion direction flips each row when serpentine is on.</div>
         <textarea id="kernelText" rows="3">0 0 0
 0 0 7
@@ -274,13 +454,6 @@
       <div id="bayerWrap" hidden>
         <div class="row"><label>Matrix size</label><select id="bayerSel"><option value="2">2 by 2</option><option value="4">4 by 4</option><option value="8" selected>8 by 8</option><option value="16">16 by 16</option></select></div>
       </div>
-    </div>
-
-    <div class="card">
-      <h2>Dither layers</h2>
-      <div id="layerList"></div>
-      <div class="row"><button class="btn" id="addLayerBtn" title="Snapshot the current dither + palette as a new layer">＋ Add current dither</button></div>
-      <div class="about">Layers blend over the base dither, top first. SVG export covers the base only.</div>
     </div>
 
     <div class="card">
@@ -302,6 +475,3 @@
 
 <script src="src/dither-engine.js"></script>
 <script src="src/app.js"></script>
-
-</body>
-</html>

@@ -18,9 +18,11 @@ const state = {
   time: 0,
   seed: 7,
   qBright: 0, qContr: 0, qSat: 100,
+  thresh: 0,
+  duoOn: false, duoDark: '#000000', duoLight: '#ffffff',
+  split: false, splitPos: 0.5,
   preStack: [],
   postStack: [],
-  ditherLayers: [], // stacked dither overlays: {id, algo, paletteId, opacity, on}
   kernelText: '0 0 0\n0 0 7\n3 5 1',
   kernelDiv: 16,
   bayerSize: 8,
@@ -33,6 +35,111 @@ const state = {
   srcW: 0, srcH: 0
 };
 let uidc = 1;
+
+// Factory defaults — Reset restores exactly this (except the loaded image stays).
+function factoryState() {
+  return {
+    algo: 'ed-floyd',
+    paletteId: 'pico8',
+    customColors: ['#000000', '#ff004d', '#ffa300', '#00e436', '#29adff', '#fff1e8'],
+    detail: 300,
+    cell: 3,
+    strength: 1.0,
+    serpentine: true,
+    glitch: 0.6,
+    temporal: true,
+    time: 0,
+    seed: 7,
+    qBright: 0, qContr: 0, qSat: 100,
+    thresh: 0,
+    duoOn: false, duoDark: '#000000', duoLight: '#ffffff',
+    split: false, splitPos: 0.5,
+    preStack: [],
+    postStack: [],
+    kernelText: '0 0 0\n0 0 7\n3 5 1',
+    kernelDiv: 16,
+    bayerSize: 8,
+    extractCount: 8,
+    zoomMode: 'fit',
+    zoomScale: 1,
+    comparing: false,
+    exportSize: 'preview'
+  };
+}
+function setVal(id, v) { const el = $(id); if (el) el.value = v; }
+function clampNum(v, lo, hi) {
+  v = +v;
+  if (!isFinite(v)) return null;
+  return Math.min(hi, Math.max(lo, v));
+}
+// Keep a slider + its numeric box in sync (both directions), clamping + rounding.
+function bindPair(rangeId, numId, lo, hi, onSlider) {
+  const r = $(rangeId), n = $(numId);
+  if (r) r.addEventListener('input', () => {
+    const v = clampNum(r.value, lo, hi);
+    if (v == null) return;
+    onSlider(v);
+    if (n) n.value = v;
+  });
+  if (n) n.addEventListener('change', () => {
+    let v = clampNum(n.value, lo, hi);
+    if (v == null) { syncAllControls(); return; }
+    // respect integer steps
+    const step = parseFloat(n.getAttribute('step') || r.getAttribute('step') || '1');
+    if (step >= 1) v = Math.round(v);
+    onSlider(v);
+    if (r) r.value = v;
+    n.value = v;
+  });
+}
+function syncAllControls() {
+  setVal('detailRange', state.detail); setVal('detailVal', state.detail);
+  setVal('cellRange', state.cell); setVal('cellVal', state.cell);
+  setVal('strengthRange', Math.round(state.strength * 100)); setVal('strengthVal', Math.round(state.strength * 100));
+  setVal('glitchRange', Math.round(state.glitch * 100)); setVal('glitchVal', Math.round(state.glitch * 100));
+  setVal('brightRange', state.qBright); setVal('brightVal', state.qBright);
+  setVal('contrRange', state.qContr); setVal('contrVal', state.qContr);
+  setVal('satRange', state.qSat); setVal('satVal', state.qSat);
+  setVal('threshRange', state.thresh); setVal('threshVal', state.thresh);
+  setVal('seedRange', state.seed); setVal('seedVal', state.seed);
+  setVal('extractCount', state.extractCount); setVal('extractCountVal', state.extractCount);
+  setVal('kernelDiv', state.kernelDiv); setVal('kernelDivVal', state.kernelDiv);
+  const ks = $('kernelText'); if (ks && ks.value !== state.kernelText) ks.value = state.kernelText;
+  const bs = $('bayerSel'); if (bs) bs.value = String(state.bayerSize);
+  const sq = $('serpChk'); if (sq) sq.checked = state.serpentine;
+  const tq = $('temporalChk'); if (tq) tq.checked = state.temporal;
+  const es = $('exportSizeSel'); if (es) es.value = state.exportSize;
+  const mb = $('motionBtn'); if (mb) mb.textContent = state.temporal ? 'Motion: on' : 'Motion: off';
+  const dq = $('duoChk'); if (dq) dq.checked = state.duoOn;
+  const dd = $('duoDark'); if (dd) dd.value = state.duoDark;
+  const dl = $('duoLight'); if (dl) dl.value = state.duoLight;
+  const dn = $('duoNote'); if (dn) dn.hidden = !state.duoOn;
+  const sb = $('splitBtn'); if (sb) sb.classList.toggle('active', !!state.split);
+}
+function disableDither(reason) {
+  if (!state.algo) { if (reason !== 'silent') toast('Already showing the original'); return; }
+  state.algo = null;
+  activePreset = null;
+  renderAlgoList($('algoSearch') ? $('algoSearch').value : '');
+  updateAlgoPanel(); requestRender();
+  if (reason !== 'silent') toast('Dithering off · original');
+}
+function resetToDefaults() {
+  const f = factoryState();
+  // keep the loaded image/video geometry, drop everything else
+  const keepKind = state.srcKind, keepW = state.srcW, keepH = state.srcH;
+  Object.keys(f).forEach(k => { state[k] = f[k]; });
+  state.srcKind = keepKind; state.srcW = keepW; state.srcH = keepH;
+  activePreset = null; presetBackup = null;
+  renderAlgoList(''); const s = $('algoSearch'); if (s) s.value = '';
+  updateAlgoPanel(); renderStacks(); renderPaletteGrid(); renderCustomEditor();
+  syncAllControls();
+  if (sourceReady) { autoDetail(); syncAllControls(); }
+  try { localStorage.removeItem(MEM_KEY); } catch (e) {}
+  saveNow();
+  requestRender();
+  toast('Defaults restored · Floyd + PICO-8');
+}
 
 // ---------------- sources ----------------
 const imgEl = new Image();
@@ -87,8 +194,7 @@ function autoDetail() {
   const backingCap = 4096;
   const gw = Math.max(80, Math.min(2000, Math.round(Math.min(state.srcW, backingCap) / Math.max(1, state.cell) / 10) * 10));
   state.detail = gw;
-  const d = $('detailRange'); if (d) d.value = gw;
-  const o = $('detailVal'); if (o) o.textContent = gw + 'px';
+  setVal('detailRange', gw); setVal('detailVal', gw);
 }
 
 // procedural samples (always work offline)
@@ -109,7 +215,7 @@ function procedural(kind) {
     const cols = ['#ff004d','#ffa300','#ffec27','#00e436','#29adff','#83769c','#ff77a8'];
     for (let i = 0; i < 90; i++) {
       x.fillStyle = cols[i % cols.length];
-      const r = 12 + E.hexToRgb('#000000') && ((i * 37) % 42);
+      const r = 12 + ((i * 37) % 42);
       x.beginPath(); x.arc((i*97) % 640, (i*61) % 480, r, 0, 7); x.fill();
     }
     x.fillStyle = '#fff1e8';
@@ -134,6 +240,7 @@ function gridSize() {
 
 // ---------------- palettes ----------------
 function paletteById(id) {
+  if (state.duoOn) return { id: 'duotone', name: 'Duotone', colors: [state.duoDark, state.duoLight] };
   if (id === 'custom') return { id: 'custom', name: 'Custom', colors: state.customColors.slice() };
   if (id === 'extracted') return { id: 'extracted', name: 'Extracted', colors: extractedColors.slice() };
   return E.PALETTES.find(p => p.id === id) || E.PALETTES[0];
@@ -161,7 +268,7 @@ function renderPaletteGrid() {
     });
     const n = document.createElement('span'); n.className = 'palname'; n.textContent = pal.name;
     b.appendChild(sw); b.appendChild(n);
-    b.onclick = () => { state.paletteId = pal.id; renderPaletteGrid(); renderCustomEditor(); requestRender(); };
+    b.onclick = () => { state.paletteId = pal.id; activePreset = null; presetBackup = null; renderPaletteGrid(); renderCustomEditor(); syncPresetHighlight(); requestRender(); };
     return b;
   };
   E.PALETTES.filter(p => p.id !== 'custom').forEach(p => g.appendChild(mk(p)));
@@ -204,7 +311,8 @@ function renderAlgoList(filter) {
     b.onclick = () => {
       // click the selected algorithm again to turn dithering off (original)
       state.algo = (state.algo === a.id) ? null : a.id;
-      ensureSaneCellForAlgo(); renderAlgoList($('algoSearch').value); updateAlgoPanel(); requestRender();
+      activePreset = null; presetBackup = null;
+      ensureSaneCellForAlgo(); renderAlgoList($('algoSearch').value); updateAlgoPanel(); syncPresetHighlight(); requestRender();
     };
     list.appendChild(b);
   });
@@ -212,13 +320,13 @@ function renderAlgoList(filter) {
 function ensureSaneCellForAlgo() {
   if (state.algo === 'spc-ascii' && state.cell < 6) {
     state.cell = 8;
-    $('cellRange').value = 8; $('cellVal').textContent = '8px';
+    setVal('cellRange', 8); setVal('cellVal', 8);
   }
 }
 function updateAlgoPanel() {
   const a = E.ALGORITHMS.find(x => x.id === state.algo);
   $('algoName').textContent = a ? a.name : 'Original · no dither';
-  $('algoCount').textContent = E.ALGORITHMS.length + ' algorithms · click again to disable';
+  $('algoCount').textContent = E.ALGORITHMS.length + ' algorithms';
   const id = state.algo || '';
   const isED = id.indexOf('ed-') === 0 || id === 'custom-kernel';
   $('serpRow').style.display = isED ? '' : 'none';
@@ -226,6 +334,21 @@ function updateAlgoPanel() {
   $('bayerWrap').hidden = id !== 'custom-bayer';
   const isGl = id.indexOf('gli-') === 0;
   $('glitchRow').style.display = isGl ? '' : 'none';
+  const ki = $('kernelInfo');
+  if (ki) {
+    const K = E.KERNELS && E.KERNELS[id];
+    if (K) {
+      ki.textContent = 'Error kernel ÷' + K.div + ': ' + K.taps.map(t => t[2] + '@(' + t[0] + ',' + t[1] + ')').join(' ');
+    } else if (id === 'custom-kernel') {
+      ki.textContent = 'Custom kernel: edit the weights above; divisor below.';
+    } else if (id.indexOf('ord-') === 0 || id === 'custom-bayer') {
+      ki.textContent = 'Ordered: fixed threshold matrix, stable frame to frame — best for animation.';
+    } else if (!id) {
+      ki.textContent = '';
+    } else {
+      ki.textContent = 'Threshold pattern at ' + Math.round(state.strength * 100) + '% strength' + (state.thresh ? ', bias ' + (state.thresh > 0 ? '+' : '') + state.thresh : '') + '.';
+    }
+  }
 }
 
 // ---------------- effects stacks ----------------
@@ -269,8 +392,16 @@ function renderStacks() {
       const nm = document.createElement('span'); nm.className = 'fxname'; nm.textContent = d.name;
       const sl = document.createElement('input');
       sl.type = 'range'; sl.min = d.min; sl.max = d.max; sl.step = 1; sl.value = fx.amount;
-      sl.oninput = () => { fx.amount = +sl.value; val.textContent = sl.value; requestRender(); };
-      const val = document.createElement('span'); val.className = 'fxval'; val.textContent = fx.amount;
+      const val = document.createElement('input');
+      val.type = 'number'; val.className = 'fxval'; val.min = d.min; val.max = d.max; val.step = 1; val.value = fx.amount;
+      val.title = d.name + ' amount — type a number';
+      sl.oninput = () => { fx.amount = +sl.value; val.value = sl.value; requestRender(); };
+      val.onchange = () => {
+        let v = clampNum(val.value, d.min, d.max);
+        if (v == null) { val.value = fx.amount; return; }
+        v = Math.round(v);
+        fx.amount = v; sl.value = v; val.value = v; requestRender();
+      };
       const up = document.createElement('button'); up.className = 'mini'; up.textContent = '▲'; up.title = 'move up';
       up.onclick = () => { if (i > 0) { st.splice(i, 1); st.splice(i - 1, 0, fx); renderStacks(); requestRender(); } };
       const dn = document.createElement('button'); dn.className = 'mini'; dn.textContent = '▼'; dn.title = 'move down';
@@ -284,40 +415,6 @@ function renderStacks() {
       el.appendChild(row);
     });
   });
-}
-function renderLayerStack() {
-  const el = $('layerList'); el.innerHTML = '';
-  const st = state.ditherLayers;
-  if (!st.length) { el.innerHTML = '<div class="stackempty">empty — snapshot the current dither below</div>'; return; }
-  st.forEach((L, i) => {
-    const a = E.ALGORITHMS.find(x => x.id === L.algo);
-    const p = paletteById(L.paletteId);
-    const row = document.createElement('div'); row.className = 'fx' + (L.on === false ? ' off' : '');
-    const eye = document.createElement('button'); eye.className = 'mini'; eye.title = 'enable/disable layer';
-    eye.textContent = L.on === false ? '○' : '●';
-    eye.onclick = () => { L.on = (L.on === false); renderLayerStack(); requestRender(); };
-    const nm = document.createElement('span'); nm.className = 'lname';
-    nm.textContent = (a ? a.name : L.algo) + ' · ' + p.name;
-    nm.title = nm.textContent;
-    const sl = document.createElement('input');
-    sl.type = 'range'; sl.min = 0; sl.max = 100; sl.step = 1; sl.value = L.opacity; sl.title = 'layer opacity';
-    sl.oninput = () => { L.opacity = +sl.value; val.textContent = sl.value + '%'; requestRender(); };
-    const val = document.createElement('span'); val.className = 'fxval'; val.textContent = L.opacity + '%';
-    const up = document.createElement('button'); up.className = 'mini'; up.textContent = '▲'; up.title = 'move up';
-    up.onclick = () => { if (i > 0) { st.splice(i, 1); st.splice(i - 1, 0, L); renderLayerStack(); requestRender(); } };
-    const dn = document.createElement('button'); dn.className = 'mini'; dn.textContent = '▼'; dn.title = 'move down';
-    dn.onclick = () => { if (i < st.length - 1) { st.splice(i, 1); st.splice(i + 1, 0, L); renderLayerStack(); requestRender(); } };
-    const rm = document.createElement('button'); rm.className = 'mini danger'; rm.textContent = 'x'; rm.title = 'delete layer';
-    rm.onclick = () => { st.splice(i, 1); renderLayerStack(); requestRender(); };
-    row.appendChild(eye); row.appendChild(nm); row.appendChild(sl); row.appendChild(val);
-    row.appendChild(up); row.appendChild(dn); row.appendChild(rm);
-    el.appendChild(row);
-  });
-}
-function addLayer() {
-  if (!state.algo) { toast('Pick a dither algorithm first'); return; }
-  state.ditherLayers.push({ id: 'dl' + (uidc++), algo: state.algo, paletteId: state.paletteId, opacity: 100, on: true });
-  renderLayerStack(); requestRender();
 }
 function applyPreStack(imgData) {
   const d = imgData.data;
@@ -424,27 +521,6 @@ function parseKernel() {
 
 // ---------------- render ----------------
 let rafId = 0, lastGrid = null;
-// Dither layers: extra full dither passes blended over the base at per-layer opacity.
-const layerC = document.createElement('canvas');
-function compositeLayers(st, srcImg, gw, gh, cell) {
-  if (!state.ditherLayers.length) return;
-  layerC.width = st.width; layerC.height = st.height;
-  const lx = layerC.getContext('2d');
-  const sx = st.getContext('2d');
-  for (const L of state.ditherLayers) {
-    if (L.on === false || !(L.opacity > 0)) continue;
-    const Lpal = paletteById(L.paletteId);
-    const Lrgb = E.paletteRGB(Lpal);
-    const grid = E.quantize(srcImg, gw, gh, L.algo, Lrgb, quantizeOpts(L.algo, { levels: Lpal.levels || 0 }));
-    lx.imageSmoothingEnabled = false;
-    E.paint(lx, grid, gw, gh, cell, L.algo, Lpal, {});
-    sx.save();
-    sx.globalAlpha = Math.max(0, Math.min(1, L.opacity / 100));
-    sx.imageSmoothingEnabled = false;
-    sx.drawImage(layerC, 0, 0);
-    sx.restore();
-  }
-}
 function requestRender() {
   scheduleSave();
   if (rafId) return;
@@ -485,6 +561,11 @@ function render(targetCanvas, forExport, gridWOverride) {
   gx.filter = 'none';
   const imgData = gx.getImageData(0, 0, gw, gh);
   applyPreStack(imgData);
+  if (state.thresh) {
+    const o = Math.round(state.thresh * 1.28);
+    const dd = imgData.data;
+    for (let i = 0; i < dd.length; i += 4) { dd[i] += o; dd[i+1] += o; dd[i+2] += o; }
+  }
   gx.putImageData(imgData, 0, 0);
   if (!state.algo) {
     // dithering disabled: adjusted original, pre + post fx still apply
@@ -494,7 +575,6 @@ function render(targetCanvas, forExport, gridWOverride) {
     const sx0 = st0.getContext('2d');
     sx0.imageSmoothingEnabled = true;
     sx0.drawImage(gridC, 0, 0, st0.width, st0.height);
-    compositeLayers(st0, imgData, gw, gh, cell0);
     applyPostStack(st0);
     lastGrid = null;
     if (!forExport) {
@@ -513,9 +593,8 @@ function render(targetCanvas, forExport, gridWOverride) {
   st.width = gw * cell; st.height = gh * cell;
   const sx = st.getContext('2d');
   sx.imageSmoothingEnabled = false;
-  E.paint(sx, grid, gw, gh, cell, state.algo, pal, {});
-  compositeLayers(st, fresh, gw, gh, cell);
-  if (!forExport) applyPostStack(st); else applyPostStack(st);
+  E.paint(sx, grid, gw, gh, cell, state.algo, pal, { time: currentTimeVal() });
+  applyPostStack(st);
   lastGrid = { grid: grid, w: gw, h: gh, cell: cell, pal: pal, truecolor: grid.truecolor };
   if (!forExport) {
     $('renderMs').textContent = (performance.now() - t0).toFixed(1) + ' ms';
@@ -523,8 +602,71 @@ function render(targetCanvas, forExport, gridWOverride) {
     $('resLabel').textContent = gw + 'x' + gh + ' cells · ' + st.width + 'x' + st.height + ' px';
     applyZoom();
     syncPresetHighlight();
+    updateSplit();
   }
   return { canvas: st, grid: grid, w: gw, h: gh };
+}
+function updateSplit() {
+  const div = $('splitDiv'), st = stage(), wrap = $('stageWrap');
+  if (!div || !st.width) return;
+  if (!state.split || state.comparing || !sourceReady) { div.hidden = true; return; }
+  // repaint dithered base (paint already ran), then cover left side with the adjusted original
+  const pos = Math.min(0.98, Math.max(0.02, state.splitPos));
+  const sx = st.getContext('2d');
+  const splitPx = Math.round(st.width * pos);
+  const gw = gridC.width, gh = gridC.height;
+  if (gw && gh && splitPx > 0) {
+    sx.save();
+    sx.imageSmoothingEnabled = true;
+    sx.beginPath(); sx.rect(0, 0, splitPx, st.height); sx.clip();
+    sx.drawImage(gridC, 0, 0, gw, gh, 0, 0, st.width, st.height);
+    sx.restore();
+    applyPostStackSplit(sx, splitPx);
+  }
+  div.hidden = false;
+  div.style.left = (st.offsetLeft + splitPx * (st.offsetWidth / Math.max(1, st.width))) + 'px';
+  div.style.top = st.offsetTop + 'px';
+  div.style.height = st.offsetHeight + 'px';
+}
+// re-apply lightweight post fx over the original side so the split compares final-vs-final
+function applyPostStackSplit(sx, splitPx) {
+  // keep it cheap: only scanlines/vignette/grain would matter; skip heavy glow/chromatic here
+  for (const fx of state.postStack) {
+    if (fx.on === false || fx.amount <= 0) continue;
+    if (fx.type === 'scanlines') {
+      sx.save(); sx.beginPath(); sx.rect(0, 0, splitPx, sx.canvas.height); sx.clip();
+      sx.globalAlpha = fx.amount/100*0.55; sx.fillStyle = '#000';
+      const gap = Math.max(2, Math.round(state.cell * 1.2));
+      for (let y = 0; y < sx.canvas.height; y += gap) sx.fillRect(0, y, splitPx, 1);
+      sx.restore();
+    } else if (fx.type === 'vignette') {
+      sx.save(); sx.beginPath(); sx.rect(0, 0, splitPx, sx.canvas.height); sx.clip();
+      const W = sx.canvas.width, H = sx.canvas.height;
+      const g = sx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.3, W/2, H/2, Math.max(W,H)*0.75);
+      g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,' + (fx.amount/100*0.85) + ')');
+      sx.fillStyle = g; sx.fillRect(0, 0, splitPx, H);
+      sx.restore();
+    }
+  }
+}
+function enableSplitDrag() {
+  const wrap = $('stageWrap'), div = $('splitDiv');
+  if (!wrap || !div || div.dataset.bound) return;
+  div.dataset.bound = '1';
+  let dragging = false;
+  const posFromEvent = (e) => {
+    const st = stage();
+    const r = st.getBoundingClientRect();
+    return Math.min(0.98, Math.max(0.02, (e.clientX - r.left) / Math.max(1, r.width)));
+  };
+  div.addEventListener('pointerdown', (e) => { dragging = true; div.setPointerCapture(e.pointerId); e.preventDefault(); });
+  div.addEventListener('pointermove', (e) => { if (!dragging) return; state.splitPos = posFromEvent(e); updateSplit(); });
+  div.addEventListener('pointerup', () => { dragging = false; scheduleSave(); });
+  wrap.addEventListener('pointerdown', (e) => {
+    if (!state.split || e.target !== stage()) return;
+    state.splitPos = posFromEvent(e);
+    updateSplit();
+  });
 }
 function drawSource(ctx, w, h) {
   if (state.srcKind === 'video') {
@@ -633,6 +775,7 @@ const PRESETS = [
   { name: 'ASCII Art', algo: 'spc-ascii', pal: 'gray8', cell: 8, fx: [] },
   { name: 'VHS Glitch', algo: 'gli-vhs', pal: 'sweetie16', cell: 3, glitch: 0.85, fx: [['post','grain',35],['post','chromatic',6]] },
   { name: 'Epsilon Glow', algo: 'spc-glow', pal: 'slso8', cell: 4, fx: [['post','glow',70],['post','vignette',40]] },
+  { name: 'Spirit', algo: 'spc-spirit', pal: 'ghost', cell: 4, fx: [['post','glow',70]] },
   { name: 'Pixel Pop', algo: 'ord-bayer8', pal: 'pico8', cell: 4, fx: [['pre','saturate',150]] }
 ];
 let activePreset = null, presetBackup = null;
@@ -649,25 +792,24 @@ function syncPresetHighlight() {
   PRESETS.forEach(p => { if (p._btn) p._btn.classList.toggle('active', activePreset === p.name && presetPartsMatch(p)); });
 }
 function togglePreset(p) {
-  // click the active preset again to turn it off (restore previous settings)
-  if (activePreset === p.name && presetPartsMatch(p) && presetBackup) {
+  // Clicking the active preset again always turns it off and restores
+  // whatever was set before it — even if sliders were tweaked afterwards.
+  // This is what makes Spirit (and every preset) reliably disableable.
+  if (activePreset === p.name && presetBackup) {
     state.algo = presetBackup.algo; state.paletteId = presetBackup.paletteId;
     state.cell = presetBackup.cell; state.glitch = presetBackup.glitch;
     state.preStack = presetBackup.preStack; state.postStack = presetBackup.postStack;
-    state.ditherLayers = presetBackup.ditherLayers || [];
-    $('cellRange').value = state.cell; $('cellVal').textContent = state.cell + 'px';
-    $('glitchRange').value = state.glitch * 100; $('glitchVal').textContent = Math.round(state.glitch * 100) + '%';
+    syncAllControls();
     activePreset = null; presetBackup = null;
-    renderAlgoList($('algoSearch').value); updateAlgoPanel(); renderStacks(); renderLayerStack(); renderPaletteGrid(); renderCustomEditor();
+    renderAlgoList($('algoSearch').value); updateAlgoPanel(); renderStacks(); renderPaletteGrid(); renderCustomEditor();
     syncPresetHighlight(); requestRender();
-    toast('Preset off');
+    toast('Preset off · previous settings restored');
     return;
   }
   presetBackup = {
     algo: state.algo, paletteId: state.paletteId, cell: state.cell, glitch: state.glitch,
     preStack: JSON.parse(JSON.stringify(state.preStack)),
-    postStack: JSON.parse(JSON.stringify(state.postStack)),
-    ditherLayers: JSON.parse(JSON.stringify(state.ditherLayers))
+    postStack: JSON.parse(JSON.stringify(state.postStack))
   };
   activePreset = p.name;
   applyPreset(p);
@@ -677,12 +819,12 @@ function applyPreset(p) {
   state.algo = p.algo; state.paletteId = p.pal; state.cell = p.cell || 3;
   ensureSaneCellForAlgo();
   state.preStack = []; state.postStack = [];
-  (p.fx || []).forEach(([w2, t2, a2]) => state[w2 + 'Stack'].push({ id: 'fx' + (uidc++), type: t2, amount: a2 }));
-  if (p.glitch != null) { state.glitch = p.glitch; $('glitchRange').value = p.glitch * 100; $('glitchVal').textContent = Math.round(p.glitch*100) + '%'; }
-  $('cellRange').value = state.cell; $('cellVal').textContent = state.cell + 'px';
+  (p.fx || []).forEach(([w2, t2, a2]) => state[w2 + 'Stack'].push({ id: 'fx' + (uidc++), type: t2, amount: a2, on: true }));
+  if (p.glitch != null) { state.glitch = p.glitch; }
+  syncAllControls();
   renderAlgoList($('algoSearch').value); updateAlgoPanel(); renderStacks(); renderPaletteGrid(); renderCustomEditor();
   requestRender();
-  toast('Preset: ' + p.name);
+  toast('Preset: ' + p.name + ' · click again to turn off');
 }
 
 // ---------------- export ----------------
@@ -730,6 +872,23 @@ function doExport(kind) {
       download(url, 'dither-buddy.svg');
       setTimeout(() => URL.revokeObjectURL(url), 8000);
       toast('Vector SVG exported — print + embroidery ready');
+    } else if (kind === 'txt') {
+      if (!lastGrid || state.algo !== 'spc-ascii') { toast('TXT export needs the ASCII Text algorithm'); return; }
+      const ramp = ' .:-=+*#%@';
+      const g = lastGrid.grid, w = lastGrid.w, h = lastGrid.h;
+      let out = '';
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const c = g.cov[y*w+x];
+          out += ramp[Math.min(ramp.length-1, (c*ramp.length)|0)];
+        }
+        out += '\n';
+      }
+      const blob = new Blob([out], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      download(url, 'dither-buddy.txt');
+      setTimeout(() => URL.revokeObjectURL(url), 8000);
+      toast('ASCII TXT exported (' + w + 'x' + h + ' chars)');
     }
   }, 30);
 }
@@ -797,16 +956,9 @@ function extractPalette() {
 }
 
 // ---------------- memory: remember settings + panel layout ----------------
-const MEM_KEY = 'dither-buddy-v1';
+const MEM_KEY = 'dither-buddy-v2';
 let saveT = 0;
 function scheduleSave() { clearTimeout(saveT); saveT = setTimeout(saveNow, 400); }
-function readLayout() {
-  return [...document.querySelectorAll('.layout > aside, .layout > section')].map(col =>
-    [...col.children]
-      .filter(el => el.id && (el.classList.contains('card') || el.classList.contains('stagecard')))
-      .map(el => el.id)
-  );
-}
 function saveNow() {
   try {
     const s = state;
@@ -814,11 +966,13 @@ function saveNow() {
       algo: s.algo, paletteId: s.paletteId, customColors: s.customColors,
       detail: s.detail, cell: s.cell, strength: s.strength, serpentine: s.serpentine,
       glitch: s.glitch, temporal: s.temporal, seed: s.seed,
-      qBright: s.qBright, qContr: s.qContr, qSat: s.qSat,
-      preStack: s.preStack, postStack: s.postStack, ditherLayers: s.ditherLayers,
+      qBright: s.qBright, qContr: s.qContr, qSat: s.qSat, thresh: s.thresh,
+      duoOn: s.duoOn, duoDark: s.duoDark, duoLight: s.duoLight,
+      split: s.split, splitPos: s.splitPos,
+      preStack: s.preStack, postStack: s.postStack,
       kernelText: s.kernelText, kernelDiv: s.kernelDiv, bayerSize: s.bayerSize,
       extractCount: s.extractCount, zoomMode: s.zoomMode, zoomScale: s.zoomScale,
-      exportSize: s.exportSize, layout: readLayout() }));
+      exportSize: s.exportSize }));
   } catch (e) {}
 }
 function loadSaved() {
@@ -831,116 +985,29 @@ function cleanFx(e) {
 }
 function applySaved(m) {
   ['algo','paletteId','detail','cell','strength','serpentine','glitch','temporal','seed',
-   'qBright','qContr','qSat','kernelText','kernelDiv','bayerSize','extractCount',
+   'qBright','qContr','qSat','thresh','duoOn','duoDark','duoLight','split','splitPos',
+   'kernelText','kernelDiv','bayerSize','extractCount',
    'zoomMode','zoomScale','exportSize'].forEach(k => { if (m[k] !== undefined) state[k] = m[k]; });
   if (state.paletteId === 'extracted') state.paletteId = 'pico8'; // source image is gone after reload
   if (Array.isArray(m.customColors) && m.customColors.length)
     state.customColors = m.customColors.filter(c => typeof c === 'string').slice(0, 32);
   if (Array.isArray(m.preStack)) state.preStack = m.preStack.map(cleanFx).filter(Boolean);
   if (Array.isArray(m.postStack)) state.postStack = m.postStack.map(cleanFx).filter(Boolean);
-  if (Array.isArray(m.ditherLayers)) state.ditherLayers = m.ditherLayers
-    .filter(L => L && typeof L.algo === 'string')
-    .map(L => ({ id: String(L.id || ('dl' + (uidc++))), algo: L.algo,
-      paletteId: typeof L.paletteId === 'string' ? L.paletteId : 'pico8',
-      opacity: isFinite(+L.opacity) ? Math.max(0, Math.min(100, +L.opacity)) : 100,
-      on: L.on !== false }));
+  // legacy saves may contain ditherLayers — intentionally ignored (feature removed)
   let mx = 0;
-  [...state.preStack, ...state.postStack, ...state.ditherLayers].forEach(e => {
+  [...state.preStack, ...state.postStack].forEach(e => {
     const g = /^[a-z]+(\d+)$/.exec(e.id || '');
     if (g) mx = Math.max(mx, +g[1]);
   });
   uidc = Math.max(uidc, mx + 1);
 }
 
-// ---------------- movable panels (photoshop-style) ----------------
-function ensurePanelIds() {
-  document.querySelectorAll('.layout .card, .layout .stagecard').forEach(el => {
-    if (el.id) return;
-    const h = el.querySelector('h2');
-    const slug = h ? h.textContent.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') : 'stage';
-    el.id = 'panel-' + (slug || 'x');
-  });
-}
-function restoreLayout(layout) {
-  if (!Array.isArray(layout)) return;
-  const cols = [...document.querySelectorAll('.layout > aside, .layout > section')];
-  layout.forEach((ids, ci) => {
-    const col = cols[ci];
-    if (!col || !Array.isArray(ids)) return;
-    ids.forEach(id => {
-      const el = document.getElementById(id);
-      if (el && (el.classList.contains('card') || el.classList.contains('stagecard'))) col.appendChild(el);
-    });
-  });
-}
-function enablePanelDrag() {
-  document.querySelectorAll('.layout .card, .layout .stagecard').forEach(el => {
-    const head = el.querySelector('h2') || el.querySelector('.stagetool');
-    if (!head || head.querySelector('.grip')) return;
-    const g = document.createElement('span');
-    g.className = 'grip'; g.textContent = '⠿⠿'; g.title = 'drag to move this panel';
-    head.insertBefore(g, head.firstChild);
-    g.addEventListener('pointerdown', e => startPanelDrag(e, el));
-  });
-}
-function startPanelDrag(e, el) {
-  if (e.button !== undefined && e.button !== 0) return;
-  e.preventDefault();
-  const r = el.getBoundingClientRect();
-  const dx = e.clientX - r.left, dy = e.clientY - r.top;
-  const ghost = el.cloneNode(true);
-  ghost.classList.add('panel-ghost');
-  ghost.style.width = r.width + 'px';
-  ghost.removeAttribute('id');
-  document.body.appendChild(ghost);
-  const moveGhost = (x, y) => { ghost.style.left = (x - dx) + 'px'; ghost.style.top = (y - dy) + 'px'; };
-  moveGhost(e.clientX, e.clientY);
-  const ph = document.createElement('div');
-  ph.className = 'panel-ph';
-  ph.style.height = el.offsetHeight + 'px';
-  el.parentNode.insertBefore(ph, el);
-  el.style.display = 'none';
-  const cols = [...document.querySelectorAll('.layout > aside, .layout > section')];
-  const onMove = (ev) => {
-    moveGhost(ev.clientX, ev.clientY);
-    const t = document.elementFromPoint(ev.clientX, ev.clientY);
-    const col = t && t.closest ? t.closest('.layout > aside, .layout > section') : null;
-    if (!col || cols.indexOf(col) < 0) return;
-    const kids = [...col.children].filter(k => k !== ph && (k.classList.contains('card') || k.classList.contains('stagecard')));
-    let placed = false;
-    for (const k of kids) {
-      const kr = k.getBoundingClientRect();
-      if (ev.clientY < kr.top + kr.height / 2) { col.insertBefore(ph, k); placed = true; break; }
-    }
-    if (!placed) col.appendChild(ph);
-  };
-  const onUp = () => {
-    window.removeEventListener('pointermove', onMove);
-    window.removeEventListener('pointerup', onUp);
-    window.removeEventListener('pointercancel', onUp);
-    ph.parentNode.insertBefore(el, ph);
-    ph.remove();
-    ghost.remove();
-    el.style.display = '';
-    saveNow();
-  };
-  window.addEventListener('pointermove', onMove);
-  window.addEventListener('pointerup', onUp);
-  window.addEventListener('pointercancel', onUp);
-}
-
 // ---------------- wire up ----------------
-function bindRange(id, fn) {
-  const el = $(id);
-  el.addEventListener('input', () => fn(+el.value));
-}
 function init() {
   const saved = loadSaved();
+  activePreset = null; presetBackup = null; // fresh page = no undo history
   if (saved) applySaved(saved);
-  ensurePanelIds();
-  restoreLayout(saved && saved.layout);
-  enablePanelDrag();
-  renderAlgoList(''); updateAlgoPanel(); renderStacks(); renderLayerStack(); renderPaletteGrid(); renderCustomEditor();
+  renderAlgoList(''); updateAlgoPanel(); renderStacks(); renderPaletteGrid(); renderCustomEditor();
 
   // presets
   PRESETS.forEach(p => {
@@ -1014,14 +1081,18 @@ function init() {
     }
   });
 
-  // sliders
-  bindRange('detailRange', (v) => { state.detail = v; $('detailVal').textContent = v + 'px'; requestRender(); });
-  bindRange('cellRange', (v) => { state.cell = v; $('cellVal').textContent = v + 'px'; requestRender(); });
-  bindRange('strengthRange', (v) => { state.strength = v / 100; $('strengthVal').textContent = v + '%'; requestRender(); });
-  bindRange('glitchRange', (v) => { state.glitch = v / 100; $('glitchVal').textContent = v + '%'; requestRender(); });
-  bindRange('brightRange', (v) => { state.qBright = v; $('brightVal').textContent = v; requestRender(); });
-  bindRange('contrRange', (v) => { state.qContr = v; $('contrVal').textContent = v; requestRender(); });
-  bindRange('satRange', (v) => { state.qSat = v; $('satVal').textContent = v + '%'; requestRender(); });
+  // sliders + editable numbers (every numeric setting has a slider and a typeable box)
+  bindPair('detailRange', 'detailVal', 80, 2000, (v) => { state.detail = v; requestRender(); });
+  bindPair('cellRange', 'cellVal', 1, 12, (v) => { state.cell = v; requestRender(); });
+  bindPair('strengthRange', 'strengthVal', 0, 150, (v) => { state.strength = v / 100; requestRender(); });
+  bindPair('glitchRange', 'glitchVal', 0, 100, (v) => { state.glitch = v / 100; requestRender(); });
+  bindPair('brightRange', 'brightVal', -100, 100, (v) => { state.qBright = v; requestRender(); });
+  bindPair('contrRange', 'contrVal', -100, 100, (v) => { state.qContr = v; requestRender(); });
+  bindPair('satRange', 'satVal', 0, 200, (v) => { state.qSat = v; requestRender(); });
+  bindPair('threshRange', 'threshVal', -100, 100, (v) => { state.thresh = v; updateAlgoPanel(); requestRender(); });
+  bindPair('seedRange', 'seedVal', 0, 99, (v) => { state.seed = v; requestRender(); });
+  bindPair('extractCount', 'extractCountVal', 2, 16, (v) => { state.extractCount = v; });
+  bindPair('kernelDiv', 'kernelDivVal', 1, 128, (v) => { state.kernelDiv = v || 16; requestRender(); });
   $('serpChk').onchange = (e) => { state.serpentine = e.target.checked; requestRender(); };
   $('temporalChk').onchange = (e) => {
     setTemporal(e.target.checked);
@@ -1041,7 +1112,6 @@ function init() {
     requestRender();
   }
   syncMotionBtn();
-  $('seedRange').addEventListener('input', (e) => { state.seed = +e.target.value; $('seedVal').textContent = e.target.value; requestRender(); });
   const zoomCenter = (f) => {
     const wr = $('stageWrap').getBoundingClientRect();
     zoomAt(wr.left + wr.width / 2, wr.top + wr.height / 2, f);
@@ -1076,8 +1146,9 @@ function init() {
   $('exportSizeSel').onchange = (e) => { state.exportSize = e.target.value; scheduleSave(); };
 
   $('algoSearch').addEventListener('input', (e) => renderAlgoList(e.target.value));
+  $('noDitherBtn').onclick = () => disableDither();
+  $('resetBtn').onclick = () => resetToDefaults();
   $('kernelText').addEventListener('input', (e) => { state.kernelText = e.target.value; requestRender(); });
-  $('kernelDiv').addEventListener('input', (e) => { state.kernelDiv = +e.target.value || 16; $('kernelDivVal').textContent = state.kernelDiv; requestRender(); });
   $('bayerSel').onchange = (e) => { state.bayerSize = +e.target.value; requestRender(); };
 
   // effect add buttons
@@ -1086,12 +1157,10 @@ function init() {
   Object.keys(POST_DEFS).forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = POST_DEFS[k].name; postSel.appendChild(o); });
   $('preAddBtn').onclick = () => addEffect('pre', preSel.value);
   $('postAddBtn').onclick = () => addEffect('post', postSel.value);
-  $('addLayerBtn').onclick = addLayer;
 
   // custom palette
   $('addColorBtn').onclick = () => { state.customColors.push('#888888'); renderCustomEditor(); renderPaletteGrid(); requestRender(); };
   $('extractBtn').onclick = extractPalette;
-  $('extractCount').addEventListener('input', (e) => { state.extractCount = +e.target.value; $('extractCountVal').textContent = e.target.value; });
   $('copyPalBtn').onclick = () => {
     const pal = activePalette();
     if (pal.levels) { toast('Truecolor has no fixed list to copy'); return; }
@@ -1119,10 +1188,18 @@ function init() {
     toast('Imported ' + state.customColors.length + ' colors');
   };
 
+  // duotone (two-color mode)
+  $('duoChk').onchange = (e) => { state.duoOn = e.target.checked; $('duoNote').hidden = !state.duoOn; renderPaletteGrid(); requestRender(); };
+  $('duoDark').oninput = (e) => { state.duoDark = e.target.value; if (state.duoOn) requestRender(); };
+  $('duoLight').oninput = (e) => { state.duoLight = e.target.value; if (state.duoOn) requestRender(); };
+  $('duoDark').onchange = () => { renderPaletteGrid(); requestRender(); };
+  $('duoLight').onchange = () => { renderPaletteGrid(); requestRender(); };
+
   // export
   $('exportPngBtn').onclick = () => doExport('png');
   $('exportJpgBtn').onclick = () => doExport('jpg');
   $('exportSvgBtn').onclick = () => doExport('svg');
+  $('exportTxtBtn').onclick = () => doExport('txt');
   $('copyBtn').onclick = copyToClipboard;
   $('recordBtn').onclick = toggleRecord;
 
@@ -1132,6 +1209,13 @@ function init() {
   const off = () => { if (!state.comparing) return; state.comparing = false; requestRender(); };
   cmp.addEventListener('pointerdown', on);
   window.addEventListener('pointerup', off);
+  $('splitBtn').onclick = () => {
+    state.split = !state.split;
+    $('splitBtn').classList.toggle('active', state.split);
+    if (state.split) toast('Split view: drag the divider');
+    enableSplitDrag(); requestRender();
+  };
+  enableSplitDrag();
 
   // video timeline
   $('playBtn').onclick = () => {
@@ -1147,21 +1231,8 @@ function init() {
   });
   vidEl.addEventListener('seeked', () => { if (vidEl.paused) requestRender(); });
 
-  // defaults (restored memory or factory state)
-  $('detailRange').value = state.detail; $('detailVal').textContent = state.detail + 'px';
-  $('cellRange').value = state.cell; $('cellVal').textContent = state.cell + 'px';
-  $('strengthRange').value = Math.round(state.strength * 100); $('strengthVal').textContent = Math.round(state.strength * 100) + '%';
-  $('glitchRange').value = Math.round(state.glitch * 100); $('glitchVal').textContent = Math.round(state.glitch * 100) + '%';
-  $('brightRange').value = state.qBright; $('brightVal').textContent = state.qBright;
-  $('contrRange').value = state.qContr; $('contrVal').textContent = state.qContr;
-  $('satRange').value = state.qSat; $('satVal').textContent = state.qSat + '%';
-  $('serpChk').checked = state.serpentine;
-  $('seedRange').value = state.seed; $('seedVal').textContent = state.seed;
-  $('exportSizeSel').value = state.exportSize;
-  $('kernelText').value = state.kernelText;
-  $('kernelDiv').value = state.kernelDiv; $('kernelDivVal').textContent = state.kernelDiv;
-  $('bayerSel').value = String(state.bayerSize);
-  $('extractCount').value = state.extractCount; $('extractCountVal').textContent = state.extractCount;
+  // defaults (restored memory or factory state) — one sync point for sliders + typeable numbers
+  syncAllControls();
   const sel = document.querySelector('.pal.sel');
   if (sel) sel.scrollIntoView({ block: 'nearest' });
 }

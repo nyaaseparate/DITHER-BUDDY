@@ -32,6 +32,7 @@ function ign(x, y, t) {
 
 // ---------------- palettes ----------------
 const PALETTES = [
+  { id:'truecolor', name:'Truecolor 24-bit RGB', colors:['#000000','#ffffff'], levels:256 },
   { id:'bw', name:'1-Bit B/W', colors:['#000000','#ffffff'] },
   { id:'sepia1', name:'1-Bit Sepia', colors:['#2b1d0e','#f5e6c8'] },
   { id:'gb', name:'Game Boy', colors:['#0f380f','#306230','#8bac0f','#9bbc0f'] },
@@ -227,10 +228,23 @@ function quantize(src, w, h, algo, pal, opts) {
   const t = opts.time || 0;
   const gAmt = opts.glitch == null ? 0.6 : opts.glitch;
   const seed = opts.seed || 1;
+  // levels: per-channel quantization steps for truecolor palettes (256 = full 24-bit).
+  // Indexed palettes ignore this and map to the nearest palette entry instead.
+  const levels = opts.levels || 0;
   const d = src.data;
-  const idx = new Uint16Array(w*h);
+  const idx = new Uint32Array(w*h);
   const cov = new Float32Array(w*h); // coverage 0..1 (darkness) for shape renderers
   const pl = pal;
+  function qLevel(v) {
+    if (levels >= 256) return clamp(Math.round(v), 0, 255);
+    const L = Math.max(2, levels);
+    return clamp(Math.round(v/255*(L-1))*255/(L-1), 0, 255);
+  }
+  // returns [packedRGB, qr, qg, qb]
+  function nearestTrue(r, g, b) {
+    const qr = qLevel(r), qg = qLevel(g), qb = qLevel(b);
+    return [(qr<<16)|(qg<<8)|qb, qr, qg, qb];
+  }
 
   // helper: read pixel with glitch displacement
   function readPx(x, y, isGlitch) {
@@ -261,11 +275,12 @@ function quantize(src, w, h, algo, pal, opts) {
         const o = (y*w+x)*4;
         let r = buf[o], g = buf[o+1], b = buf[o+2];
         if (t !== 0) { const nb = (hash2(x, y, (t*60)|0) - 0.5) * 6 * Math.min(1, Math.abs(tbias)/3 + 0.15); r += nb; g += nb; b += nb; }
-        const qi = nearestIdx(r, g, b, pl);
+        let qi, qr, qg, qb;
+        if (levels) { const nt = nearestTrue(r, g, b); qi = nt[0]; qr = nt[1]; qg = nt[2]; qb = nt[3]; }
+        else { qi = nearestIdx(r, g, b, pl); const q = pl[qi]; qr = q[0]; qg = q[1]; qb = q[2]; }
         idx[y*w+x] = qi;
-        const q = pl[qi];
         cov[y*w+x] = 1 - (lumOf(r,g,b)/255);
-        const er = (r - q[0]) * strength, eg = (g - q[1]) * strength, eb = (b - q[2]) * strength;
+        const er = (r - qr) * strength, eg = (g - qg) * strength, eb = (b - qb) * strength;
         if (er === 0 && eg === 0 && eb === 0) continue;
         for (let k = 0; k < kernel.taps.length; k++) {
           const tp = kernel.taps[k];
@@ -278,9 +293,8 @@ function quantize(src, w, h, algo, pal, opts) {
         }
       }
     }
-    return { idx: idx, cov: cov, w: w, h: h };
+    return { idx: idx, cov: cov, w: w, h: h, truecolor: !!levels };
   }
-
   // threshold-based (ordered / pattern / glitch / special-flat)
   let bayer = null, bsize = 4;
   if (algo === 'ord-bayer2') { bayer = BAYER[2]; bsize = 2; }
@@ -355,7 +369,7 @@ function quantize(src, w, h, algo, pal, opts) {
         const gy = lumOf(d[oC],d[oC+1],d[oC+2]) - lumOf(d[oA],d[oA+1],d[oA+2]);
         const mag = Math.sqrt(gx*gx+gy*gy);
         const on = mag > (60 - strength*45);
-        idx[y*w+x] = on ? 0 : (pl.length - 1);
+        idx[y*w+x] = levels ? (on ? 0 : 0xFFFFFF) : (on ? 0 : (pl.length - 1));
         cov[y*w+x] = on ? 1 : 0;
         continue;
       }
@@ -365,12 +379,12 @@ function quantize(src, w, h, algo, pal, opts) {
         cov[y*w+x] = 1 - lumOf(r,g,b)/255;
         continue;
       }
-      const qi = nearestIdx(r + jx, g + jx, b + jx, pl);
+      const qi = levels ? nearestTrue(r + jx, g + jx, b + jx)[0] : nearestIdx(r + jx, g + jx, b + jx, pl);
       idx[y*w+x] = qi;
       cov[y*w+x] = 1 - (lumOf(r,g,b)/255);
     }
   }
-  return { idx: idx, cov: cov, w: w, h: h };
+  return { idx: idx, cov: cov, w: w, h: h, truecolor: !!levels };
 }
 
 // ---------------- paint ----------------
@@ -391,19 +405,35 @@ function paint(ctx, grid, w, h, cell, algo, pal, opts) {
     const octx = off.getContext('2d');
     const img = octx.createImageData(w, h);
     const px = img.data;
-    const lut = new Uint8Array(plen * 3);
-    for (let i = 0; i < plen; i++) {
-      const c = hexToRgb(palCss[i % palCss.length]);
-      lut[i*3] = c[0]; lut[i*3+1] = c[1]; lut[i*3+2] = c[2];
-    }
-    for (let i = 0, n = w*h; i < n; i++) {
-      const v = grid.idx[i] % plen, o = i*4;
-      px[o] = lut[v*3]; px[o+1] = lut[v*3+1]; px[o+2] = lut[v*3+2]; px[o+3] = 255;
+    if (grid.truecolor) {
+      // packed 24-bit RGB straight through, no palette lookup
+      for (let i = 0, n = w*h; i < n; i++) {
+        const v = grid.idx[i], o = i*4;
+        px[o] = (v>>16)&255; px[o+1] = (v>>8)&255; px[o+2] = v&255; px[o+3] = 255;
+      }
+    } else {
+      const lut = new Uint8Array(plen * 3);
+      for (let i = 0; i < plen; i++) {
+        const c = hexToRgb(palCss[i % palCss.length]);
+        lut[i*3] = c[0]; lut[i*3+1] = c[1]; lut[i*3+2] = c[2];
+      }
+      for (let i = 0, n = w*h; i < n; i++) {
+        const v = grid.idx[i] % plen, o = i*4;
+        px[o] = lut[v*3]; px[o+1] = lut[v*3+1]; px[o+2] = lut[v*3+2]; px[o+3] = 255;
+      }
     }
     octx.putImageData(img, 0, 0);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(off, 0, 0, w, h, 0, 0, W, H);
   }
+
+  // shape renderers batch one path per palette color — meaningless for truecolor's
+  // millions of unique colors, so those algorithms fall back to smooth blocks.
+  const TRUE_SHAPE_FALLBACK = {
+    'spc-halfdot':1,'spc-cmyk':1,'spc-rosette':1,'spc-halflines':1,
+    'spc-halfcross':1,'spc-ascii':1,'spc-blocks':1,'spc-stitch':1,'spc-knit':1
+  };
+  if (grid.truecolor && TRUE_SHAPE_FALLBACK[algo]) { blockFill(); return; }
 
   switch (algo) {
     case 'spc-halfdot':

@@ -20,11 +20,13 @@ const state = {
   qBright: 0, qContr: 0, qSat: 100,
   preStack: [],
   postStack: [],
+  ditherLayers: [], // stacked dither overlays: {id, algo, paletteId, opacity, on}
   kernelText: '0 0 0\n0 0 7\n3 5 1',
   kernelDiv: 16,
   bayerSize: 8,
   extractCount: 8,
-  zoom: 'fit',
+  zoomMode: 'fit', // 'fit' | 'manual'
+  zoomScale: 1,    // css px per image px in manual mode
   comparing: false,
   exportSize: 'preview',
   srcKind: null, // 'image' | 'video'
@@ -68,6 +70,7 @@ function onNewSource() {
   $('timelineWrap').hidden = !isV;
   $('vidBadge').hidden = !isV;
   updateFileInfo();
+  autoDetail();
   stopAnimLoop();
   state.time = 0;
   if (isV || state.temporal) startAnimLoop();
@@ -76,6 +79,16 @@ function onNewSource() {
 function updateFileInfo() {
   const t = state.srcKind === 'video' ? 'video' : 'image';
   $('fileInfo').textContent = t + ' ' + state.srcW + ' x ' + state.srcH + ' px';
+}
+// Match the working grid to the loaded image so quality isn't lost on load:
+// backing store (detail x pixel size) ~= source resolution, capped for safety.
+function autoDetail() {
+  if (!state.srcW) return;
+  const backingCap = 4096;
+  const gw = Math.max(80, Math.min(2000, Math.round(Math.min(state.srcW, backingCap) / Math.max(1, state.cell) / 10) * 10));
+  state.detail = gw;
+  const d = $('detailRange'); if (d) d.value = gw;
+  const o = $('detailVal'); if (o) o.textContent = gw + 'px';
 }
 
 // procedural samples (always work offline)
@@ -120,10 +133,19 @@ function gridSize() {
 }
 
 // ---------------- palettes ----------------
-function activePalette() {
-  if (state.paletteId === 'custom') return { id: 'custom', name: 'Custom', colors: state.customColors.slice() };
-  if (state.paletteId === 'extracted') return { id: 'extracted', name: 'Extracted', colors: extractedColors.slice() };
-  return E.PALETTES.find(p => p.id === state.paletteId) || E.PALETTES[0];
+function paletteById(id) {
+  if (id === 'custom') return { id: 'custom', name: 'Custom', colors: state.customColors.slice() };
+  if (id === 'extracted') return { id: 'extracted', name: 'Extracted', colors: extractedColors.slice() };
+  return E.PALETTES.find(p => p.id === id) || E.PALETTES[0];
+}
+function activePalette() { return paletteById(state.paletteId); }
+// RGB array for quantize; truecolor depth travels via opts.levels
+function quantizeOpts(algo, extra) {
+  return Object.assign({
+    strength: state.strength, serpentine: state.serpentine,
+    time: currentTimeVal(), glitch: state.glitch, seed: state.seed,
+    kernel: algo === 'custom-kernel' ? parseKernel() : null, bayerSize: state.bayerSize
+  }, extra);
 }
 let extractedColors = ['#000000', '#ffffff'];
 function renderPaletteGrid() {
@@ -131,9 +153,10 @@ function renderPaletteGrid() {
   const mk = (pal) => {
     const b = document.createElement('button');
     b.className = 'pal' + (state.paletteId === pal.id ? ' sel' : '');
-    b.title = pal.name + ' (' + pal.colors.length + ')';
-    const sw = document.createElement('span'); sw.className = 'swatches';
-    pal.colors.slice(0, 12).forEach(c => {
+    b.title = pal.name + (pal.levels ? ' (24-bit, 16.7M colors)' : ' (' + pal.colors.length + ')');
+    const sw = document.createElement('span'); sw.className = 'swatches' + (pal.levels ? ' spectrum' : '');
+    if (pal.levels) { sw.title = 'full RGB — no palette restriction'; }
+    else pal.colors.slice(0, 12).forEach(c => {
       const s = document.createElement('i'); s.style.background = c; sw.appendChild(s);
     });
     const n = document.createElement('span'); n.className = 'palname'; n.textContent = pal.name;
@@ -178,7 +201,11 @@ function renderAlgoList(filter) {
     const b = document.createElement('button');
     b.className = 'algo' + (state.algo === a.id ? ' sel' : '');
     b.textContent = a.name;
-    b.onclick = () => { state.algo = a.id; ensureSaneCellForAlgo(); renderAlgoList($('algoSearch').value); updateAlgoPanel(); requestRender(); };
+    b.onclick = () => {
+      // click the selected algorithm again to turn dithering off (original)
+      state.algo = (state.algo === a.id) ? null : a.id;
+      ensureSaneCellForAlgo(); renderAlgoList($('algoSearch').value); updateAlgoPanel(); requestRender();
+    };
     list.appendChild(b);
   });
 }
@@ -190,13 +217,14 @@ function ensureSaneCellForAlgo() {
 }
 function updateAlgoPanel() {
   const a = E.ALGORITHMS.find(x => x.id === state.algo);
-  $('algoName').textContent = a ? a.name : state.algo;
-  $('algoCount').textContent = E.ALGORITHMS.length + ' algorithms';
-  const isED = state.algo.indexOf('ed-') === 0 || state.algo === 'custom-kernel';
+  $('algoName').textContent = a ? a.name : 'Original · no dither';
+  $('algoCount').textContent = E.ALGORITHMS.length + ' algorithms · click again to disable';
+  const id = state.algo || '';
+  const isED = id.indexOf('ed-') === 0 || id === 'custom-kernel';
   $('serpRow').style.display = isED ? '' : 'none';
-  $('kernelWrap').hidden = state.algo !== 'custom-kernel';
-  $('bayerWrap').hidden = state.algo !== 'custom-bayer';
-  const isGl = state.algo.indexOf('gli-') === 0;
+  $('kernelWrap').hidden = id !== 'custom-kernel';
+  $('bayerWrap').hidden = id !== 'custom-bayer';
+  const isGl = id.indexOf('gli-') === 0;
   $('glitchRow').style.display = isGl ? '' : 'none';
 }
 
@@ -223,7 +251,7 @@ const POST_DEFS = {
 function addEffect(which, type) {
   const defs = which === 'pre' ? PRE_DEFS : POST_DEFS;
   if (!defs[type]) return;
-  state[which + 'Stack'].push({ id: 'fx' + (uidc++), type: type, amount: defs[type].def });
+  state[which + 'Stack'].push({ id: 'fx' + (uidc++), type: type, amount: defs[type].def, on: true });
   renderStacks(); requestRender();
 }
 function renderStacks() {
@@ -233,7 +261,11 @@ function renderStacks() {
     if (!st.length) { el.innerHTML = '<div class="stackempty">empty — add one below</div>'; return; }
     st.forEach((fx, i) => {
       const d = defs[fx.type];
-      const row = document.createElement('div'); row.className = 'fx';
+      if (!d) return;
+      const row = document.createElement('div'); row.className = 'fx' + (fx.on === false ? ' off' : '');
+      const eye = document.createElement('button'); eye.className = 'mini'; eye.title = 'enable/disable layer';
+      eye.textContent = fx.on === false ? '○' : '●';
+      eye.onclick = () => { fx.on = (fx.on === false); renderStacks(); requestRender(); };
       const nm = document.createElement('span'); nm.className = 'fxname'; nm.textContent = d.name;
       const sl = document.createElement('input');
       sl.type = 'range'; sl.min = d.min; sl.max = d.max; sl.step = 1; sl.value = fx.amount;
@@ -243,17 +275,54 @@ function renderStacks() {
       up.onclick = () => { if (i > 0) { st.splice(i, 1); st.splice(i - 1, 0, fx); renderStacks(); requestRender(); } };
       const dn = document.createElement('button'); dn.className = 'mini'; dn.textContent = '▼'; dn.title = 'move down';
       dn.onclick = () => { if (i < st.length - 1) { st.splice(i, 1); st.splice(i + 1, 0, fx); renderStacks(); requestRender(); } };
-      const rm = document.createElement('button'); rm.className = 'mini danger'; rm.textContent = 'x';
+      const cp = document.createElement('button'); cp.className = 'mini'; cp.textContent = '+'; cp.title = 'duplicate layer';
+      cp.onclick = () => { st.splice(i + 1, 0, { id: 'fx' + (uidc++), type: fx.type, amount: fx.amount, on: fx.on !== false }); renderStacks(); requestRender(); };
+      const rm = document.createElement('button'); rm.className = 'mini danger'; rm.textContent = 'x'; rm.title = 'delete layer';
       rm.onclick = () => { st.splice(i, 1); renderStacks(); requestRender(); };
-      row.appendChild(nm); row.appendChild(sl); row.appendChild(val);
-      row.appendChild(up); row.appendChild(dn); row.appendChild(rm);
+      row.appendChild(eye); row.appendChild(nm); row.appendChild(sl); row.appendChild(val);
+      row.appendChild(up); row.appendChild(dn); row.appendChild(cp); row.appendChild(rm);
       el.appendChild(row);
     });
   });
 }
+function renderLayerStack() {
+  const el = $('layerList'); el.innerHTML = '';
+  const st = state.ditherLayers;
+  if (!st.length) { el.innerHTML = '<div class="stackempty">empty — snapshot the current dither below</div>'; return; }
+  st.forEach((L, i) => {
+    const a = E.ALGORITHMS.find(x => x.id === L.algo);
+    const p = paletteById(L.paletteId);
+    const row = document.createElement('div'); row.className = 'fx' + (L.on === false ? ' off' : '');
+    const eye = document.createElement('button'); eye.className = 'mini'; eye.title = 'enable/disable layer';
+    eye.textContent = L.on === false ? '○' : '●';
+    eye.onclick = () => { L.on = (L.on === false); renderLayerStack(); requestRender(); };
+    const nm = document.createElement('span'); nm.className = 'lname';
+    nm.textContent = (a ? a.name : L.algo) + ' · ' + p.name;
+    nm.title = nm.textContent;
+    const sl = document.createElement('input');
+    sl.type = 'range'; sl.min = 0; sl.max = 100; sl.step = 1; sl.value = L.opacity; sl.title = 'layer opacity';
+    sl.oninput = () => { L.opacity = +sl.value; val.textContent = sl.value + '%'; requestRender(); };
+    const val = document.createElement('span'); val.className = 'fxval'; val.textContent = L.opacity + '%';
+    const up = document.createElement('button'); up.className = 'mini'; up.textContent = '▲'; up.title = 'move up';
+    up.onclick = () => { if (i > 0) { st.splice(i, 1); st.splice(i - 1, 0, L); renderLayerStack(); requestRender(); } };
+    const dn = document.createElement('button'); dn.className = 'mini'; dn.textContent = '▼'; dn.title = 'move down';
+    dn.onclick = () => { if (i < st.length - 1) { st.splice(i, 1); st.splice(i + 1, 0, L); renderLayerStack(); requestRender(); } };
+    const rm = document.createElement('button'); rm.className = 'mini danger'; rm.textContent = 'x'; rm.title = 'delete layer';
+    rm.onclick = () => { st.splice(i, 1); renderLayerStack(); requestRender(); };
+    row.appendChild(eye); row.appendChild(nm); row.appendChild(sl); row.appendChild(val);
+    row.appendChild(up); row.appendChild(dn); row.appendChild(rm);
+    el.appendChild(row);
+  });
+}
+function addLayer() {
+  if (!state.algo) { toast('Pick a dither algorithm first'); return; }
+  state.ditherLayers.push({ id: 'dl' + (uidc++), algo: state.algo, paletteId: state.paletteId, opacity: 100, on: true });
+  renderLayerStack(); requestRender();
+}
 function applyPreStack(imgData) {
   const d = imgData.data;
   for (const fx of state.preStack) {
+    if (fx.on === false) continue;
     const a = fx.amount;
     switch (fx.type) {
       case 'brightness': { const o = a * 2.55; for (let i = 0; i < d.length; i += 4) { d[i] += o; d[i+1] += o; d[i+2] += o; } break; }
@@ -287,6 +356,7 @@ function applyPostStack(canvas) {
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
   for (const fx of state.postStack) {
+    if (fx.on === false) continue;
     const a = fx.amount;
     if (fx.type === 'glow' && a > 0) {
       const tmp = document.createElement('canvas'); tmp.width = W; tmp.height = H;
@@ -354,7 +424,29 @@ function parseKernel() {
 
 // ---------------- render ----------------
 let rafId = 0, lastGrid = null;
+// Dither layers: extra full dither passes blended over the base at per-layer opacity.
+const layerC = document.createElement('canvas');
+function compositeLayers(st, srcImg, gw, gh, cell) {
+  if (!state.ditherLayers.length) return;
+  layerC.width = st.width; layerC.height = st.height;
+  const lx = layerC.getContext('2d');
+  const sx = st.getContext('2d');
+  for (const L of state.ditherLayers) {
+    if (L.on === false || !(L.opacity > 0)) continue;
+    const Lpal = paletteById(L.paletteId);
+    const Lrgb = E.paletteRGB(Lpal);
+    const grid = E.quantize(srcImg, gw, gh, L.algo, Lrgb, quantizeOpts(L.algo, { levels: Lpal.levels || 0 }));
+    lx.imageSmoothingEnabled = false;
+    E.paint(lx, grid, gw, gh, cell, L.algo, Lpal, {});
+    sx.save();
+    sx.globalAlpha = Math.max(0, Math.min(1, L.opacity / 100));
+    sx.imageSmoothingEnabled = false;
+    sx.drawImage(layerC, 0, 0);
+    sx.restore();
+  }
+}
 function requestRender() {
+  scheduleSave();
   if (rafId) return;
   rafId = requestAnimationFrame(() => { rafId = 0; render(); });
 }
@@ -385,6 +477,7 @@ function render(targetCanvas, forExport, gridWOverride) {
     drawSource(sx, st.width, st.height);
     sx.filter = 'none';
     $('renderMs').textContent = 'original';
+    lastCost = 5;
     return { canvas: st, grid: null };
   }
   gx.filter = qf;
@@ -393,25 +486,43 @@ function render(targetCanvas, forExport, gridWOverride) {
   const imgData = gx.getImageData(0, 0, gw, gh);
   applyPreStack(imgData);
   gx.putImageData(imgData, 0, 0);
+  if (!state.algo) {
+    // dithering disabled: adjusted original, pre + post fx still apply
+    const st0 = targetCanvas || stage();
+    const cell0 = forExport ? (forExport.cell || state.cell) : state.cell;
+    st0.width = gw * cell0; st0.height = gh * cell0;
+    const sx0 = st0.getContext('2d');
+    sx0.imageSmoothingEnabled = true;
+    sx0.drawImage(gridC, 0, 0, st0.width, st0.height);
+    compositeLayers(st0, imgData, gw, gh, cell0);
+    applyPostStack(st0);
+    lastGrid = null;
+    if (!forExport) {
+      $('renderMs').textContent = (performance.now() - t0).toFixed(1) + ' ms';
+      lastCost = performance.now() - t0;
+      $('resLabel').textContent = 'original · ' + st0.width + 'x' + st0.height + ' px';
+      applyZoom();
+      syncPresetHighlight();
+    }
+    return { canvas: st0, grid: null, w: gw, h: gh };
+  }
   const fresh = gx.getImageData(0, 0, gw, gh);
-  const kernel = state.algo === 'custom-kernel' ? parseKernel() : null;
-  const grid = E.quantize(fresh, gw, gh, state.algo, palRGB, {
-    strength: state.strength, serpentine: state.serpentine,
-    time: currentTimeVal(), glitch: state.glitch, seed: state.seed,
-    kernel: kernel, bayerSize: state.bayerSize
-  });
+  const grid = E.quantize(fresh, gw, gh, state.algo, palRGB, quantizeOpts(state.algo, { levels: pal.levels || 0 }));
   const st = targetCanvas || stage();
   const cell = forExport ? (forExport.cell || state.cell) : state.cell;
   st.width = gw * cell; st.height = gh * cell;
   const sx = st.getContext('2d');
   sx.imageSmoothingEnabled = false;
   E.paint(sx, grid, gw, gh, cell, state.algo, pal, {});
+  compositeLayers(st, fresh, gw, gh, cell);
   if (!forExport) applyPostStack(st); else applyPostStack(st);
-  lastGrid = { grid: grid, w: gw, h: gh, cell: cell, pal: pal };
+  lastGrid = { grid: grid, w: gw, h: gh, cell: cell, pal: pal, truecolor: grid.truecolor };
   if (!forExport) {
     $('renderMs').textContent = (performance.now() - t0).toFixed(1) + ' ms';
+    lastCost = performance.now() - t0;
     $('resLabel').textContent = gw + 'x' + gh + ' cells · ' + st.width + 'x' + st.height + ' px';
     applyZoom();
+    syncPresetHighlight();
   }
   return { canvas: st, grid: grid, w: gw, h: gh };
 }
@@ -422,16 +533,61 @@ function drawSource(ctx, w, h) {
     ctx.drawImage(imgEl, 0, 0, w, h);
   }
 }
-function applyZoom() {
+// Fixed-size viewfinder: the wrap keeps its height and the canvas is scaled
+// with explicit CSS px, so detail grid / pixel size never change the frame.
+function fitScale() {
   const st = stage();
-  st.classList.remove('zoom1', 'zoom2');
-  if (state.zoom === '1') { st.style.width = st.width + 'px'; }
-  else if (state.zoom === '2') { st.style.width = (st.width * 2) + 'px'; }
-  else { st.style.width = ''; }
+  const wrap = $('stageWrap');
+  if (!st.width || !wrap.clientWidth) return 1;
+  const pad = 24;
+  const availW = Math.max(50, wrap.clientWidth - pad);
+  const availH = Math.max(50, wrap.clientHeight - pad);
+  return Math.min(availW / st.width, availH / st.height);
+}
+function applyZoom(keepCenter) {
+  const st = stage();
+  if (!st.width) return;
+  const wrap = $('stageWrap');
+  let s = state.zoomMode === 'fit' ? fitScale() : state.zoomScale;
+  if (!isFinite(s) || s <= 0) s = 1;
+  let fx = 0.5, fy = 0.5;
+  if (keepCenter) {
+    fx = (wrap.scrollLeft + wrap.clientWidth / 2) / Math.max(1, wrap.scrollWidth);
+    fy = (wrap.scrollTop + wrap.clientHeight / 2) / Math.max(1, wrap.scrollHeight);
+  }
+  st.style.width = Math.max(1, Math.round(st.width * s)) + 'px';
+  st.style.height = Math.max(1, Math.round(st.height * s)) + 'px';
+  // fixed frame: when the canvas overflows, pin it top-left so every edge stays reachable by scroll
+  wrap.classList.toggle('zoomed', st.offsetWidth > wrap.clientWidth || st.offsetHeight > wrap.clientHeight);
+  if (keepCenter) {
+    wrap.scrollLeft = fx * wrap.scrollWidth - wrap.clientWidth / 2;
+    wrap.scrollTop = fy * wrap.scrollHeight - wrap.clientHeight / 2;
+  }
+  const lbl = $('zoomLabel');
+  if (lbl) lbl.textContent = (state.zoomMode === 'fit' ? 'fit · ' : '') + Math.round(s * 100) + '%';
+  const fitB = $('zoomFitBtn'), oneB = $('zoom100Btn');
+  if (fitB) fitB.classList.toggle('active', state.zoomMode === 'fit');
+  if (oneB) oneB.classList.toggle('active', state.zoomMode === 'manual' && Math.abs(state.zoomScale - 1) < 0.01);
+}
+// zoom keeping the image point under the cursor pinned (not the viewport center)
+function zoomAt(mx, my, factor) {
+  if (!sourceReady) return;
+  const wrap = $('stageWrap'), st = stage();
+  const wr = wrap.getBoundingClientRect();
+  const cur = state.zoomMode === 'fit' ? fitScale() : state.zoomScale;
+  const px = wrap.scrollLeft + (mx - wr.left) - st.offsetLeft;
+  const py = wrap.scrollTop + (my - wr.top) - st.offsetTop;
+  const next = Math.min(20, Math.max(0.05, cur * factor));
+  state.zoomMode = 'manual'; state.zoomScale = next;
+  applyZoom(false);
+  const k = next / cur;
+  wrap.scrollLeft = px * k - (mx - wr.left) + st.offsetLeft;
+  wrap.scrollTop = py * k - (my - wr.top) + st.offsetTop;
+  scheduleSave();
 }
 
 // ---------------- animation loop (temporal + video) ----------------
-let animId = 0, lastTick = 0;
+let animId = 0, lastTick = 0, lastCost = 66;
 function startAnimLoop() {
   stopAnimLoop();
   lastTick = performance.now();
@@ -439,7 +595,9 @@ function startAnimLoop() {
     animId = requestAnimationFrame(loop);
     const now = performance.now();
     const slowShape = state.algo === 'spc-ascii' || state.algo === 'spc-knit' || state.algo === 'spc-blocks';
-    if (now - lastTick < (slowShape ? 400 : 66)) return; // ~15fps shimmer, slower for heavy shape modes
+    // adaptive: never re-render faster than ~2x the last frame cost (big grids = slower shimmer, no pile-up)
+    const base = slowShape ? 400 : 66;
+    if (now - lastTick < Math.min(1500, Math.max(base, lastCost * 2))) return;
     lastTick = now;
     if (state.srcKind === 'video') {
       if (!vidEl.paused) {
@@ -477,6 +635,44 @@ const PRESETS = [
   { name: 'Epsilon Glow', algo: 'spc-glow', pal: 'slso8', cell: 4, fx: [['post','glow',70],['post','vignette',40]] },
   { name: 'Pixel Pop', algo: 'ord-bayer8', pal: 'pico8', cell: 4, fx: [['pre','saturate',150]] }
 ];
+let activePreset = null, presetBackup = null;
+function presetPartsMatch(p) {
+  if (state.algo !== p.algo || state.paletteId !== p.pal || state.cell !== (p.cell || 3)) return false;
+  if (p.glitch != null && Math.abs(state.glitch - p.glitch) > 1e-9) return false;
+  const pre = state.preStack.map(e => [e.type, e.amount, e.on !== false]);
+  const post = state.postStack.map(e => [e.type, e.amount, e.on !== false]);
+  const epre = (p.fx || []).filter(f => f[0] === 'pre').map(f => [f[1], f[2], true]);
+  const epost = (p.fx || []).filter(f => f[0] === 'post').map(f => [f[1], f[2], true]);
+  return JSON.stringify(pre) === JSON.stringify(epre) && JSON.stringify(post) === JSON.stringify(epost);
+}
+function syncPresetHighlight() {
+  PRESETS.forEach(p => { if (p._btn) p._btn.classList.toggle('active', activePreset === p.name && presetPartsMatch(p)); });
+}
+function togglePreset(p) {
+  // click the active preset again to turn it off (restore previous settings)
+  if (activePreset === p.name && presetPartsMatch(p) && presetBackup) {
+    state.algo = presetBackup.algo; state.paletteId = presetBackup.paletteId;
+    state.cell = presetBackup.cell; state.glitch = presetBackup.glitch;
+    state.preStack = presetBackup.preStack; state.postStack = presetBackup.postStack;
+    state.ditherLayers = presetBackup.ditherLayers || [];
+    $('cellRange').value = state.cell; $('cellVal').textContent = state.cell + 'px';
+    $('glitchRange').value = state.glitch * 100; $('glitchVal').textContent = Math.round(state.glitch * 100) + '%';
+    activePreset = null; presetBackup = null;
+    renderAlgoList($('algoSearch').value); updateAlgoPanel(); renderStacks(); renderLayerStack(); renderPaletteGrid(); renderCustomEditor();
+    syncPresetHighlight(); requestRender();
+    toast('Preset off');
+    return;
+  }
+  presetBackup = {
+    algo: state.algo, paletteId: state.paletteId, cell: state.cell, glitch: state.glitch,
+    preStack: JSON.parse(JSON.stringify(state.preStack)),
+    postStack: JSON.parse(JSON.stringify(state.postStack)),
+    ditherLayers: JSON.parse(JSON.stringify(state.ditherLayers))
+  };
+  activePreset = p.name;
+  applyPreset(p);
+  syncPresetHighlight();
+}
 function applyPreset(p) {
   state.algo = p.algo; state.paletteId = p.pal; state.cell = p.cell || 3;
   ensureSaneCellForAlgo();
@@ -520,7 +716,8 @@ function doExport(kind) {
         toast('Exported ' + off.width + 'x' + off.height);
       }, kind === 'png' ? 'image/png' : 'image/jpeg', 0.92);
     } else if (kind === 'svg') {
-      if (!lastGrid) { toast('Render first'); return; }
+      if (!lastGrid || !state.algo) { toast('Pick a dither algorithm first for SVG'); return; }
+      if (lastGrid.truecolor) { toast('Truecolor has too many colors for SVG — pick a limited palette'); return; }
       const shape = (state.algo === 'spc-halfdot' || state.algo === 'spc-cmyk' || state.algo === 'spc-rosette') ? 'circle' : 'rect';
       let svg;
       if (lastGrid.w * lastGrid.h > 260000) {
@@ -599,19 +796,158 @@ function extractPalette() {
   toast('Extracted ' + extractedColors.length + ' colors');
 }
 
+// ---------------- memory: remember settings + panel layout ----------------
+const MEM_KEY = 'dither-buddy-v1';
+let saveT = 0;
+function scheduleSave() { clearTimeout(saveT); saveT = setTimeout(saveNow, 400); }
+function readLayout() {
+  return [...document.querySelectorAll('.layout > aside, .layout > section')].map(col =>
+    [...col.children]
+      .filter(el => el.id && (el.classList.contains('card') || el.classList.contains('stagecard')))
+      .map(el => el.id)
+  );
+}
+function saveNow() {
+  try {
+    const s = state;
+    localStorage.setItem(MEM_KEY, JSON.stringify({ v: 1,
+      algo: s.algo, paletteId: s.paletteId, customColors: s.customColors,
+      detail: s.detail, cell: s.cell, strength: s.strength, serpentine: s.serpentine,
+      glitch: s.glitch, temporal: s.temporal, seed: s.seed,
+      qBright: s.qBright, qContr: s.qContr, qSat: s.qSat,
+      preStack: s.preStack, postStack: s.postStack, ditherLayers: s.ditherLayers,
+      kernelText: s.kernelText, kernelDiv: s.kernelDiv, bayerSize: s.bayerSize,
+      extractCount: s.extractCount, zoomMode: s.zoomMode, zoomScale: s.zoomScale,
+      exportSize: s.exportSize, layout: readLayout() }));
+  } catch (e) {}
+}
+function loadSaved() {
+  try { const m = JSON.parse(localStorage.getItem(MEM_KEY)); return (m && m.v === 1) ? m : null; }
+  catch (e) { return null; }
+}
+function cleanFx(e) {
+  if (!e || typeof e.type !== 'string' || !isFinite(+e.amount)) return null;
+  return { id: String(e.id || ('fx' + (uidc++))), type: e.type, amount: +e.amount, on: e.on !== false };
+}
+function applySaved(m) {
+  ['algo','paletteId','detail','cell','strength','serpentine','glitch','temporal','seed',
+   'qBright','qContr','qSat','kernelText','kernelDiv','bayerSize','extractCount',
+   'zoomMode','zoomScale','exportSize'].forEach(k => { if (m[k] !== undefined) state[k] = m[k]; });
+  if (state.paletteId === 'extracted') state.paletteId = 'pico8'; // source image is gone after reload
+  if (Array.isArray(m.customColors) && m.customColors.length)
+    state.customColors = m.customColors.filter(c => typeof c === 'string').slice(0, 32);
+  if (Array.isArray(m.preStack)) state.preStack = m.preStack.map(cleanFx).filter(Boolean);
+  if (Array.isArray(m.postStack)) state.postStack = m.postStack.map(cleanFx).filter(Boolean);
+  if (Array.isArray(m.ditherLayers)) state.ditherLayers = m.ditherLayers
+    .filter(L => L && typeof L.algo === 'string')
+    .map(L => ({ id: String(L.id || ('dl' + (uidc++))), algo: L.algo,
+      paletteId: typeof L.paletteId === 'string' ? L.paletteId : 'pico8',
+      opacity: isFinite(+L.opacity) ? Math.max(0, Math.min(100, +L.opacity)) : 100,
+      on: L.on !== false }));
+  let mx = 0;
+  [...state.preStack, ...state.postStack, ...state.ditherLayers].forEach(e => {
+    const g = /^[a-z]+(\d+)$/.exec(e.id || '');
+    if (g) mx = Math.max(mx, +g[1]);
+  });
+  uidc = Math.max(uidc, mx + 1);
+}
+
+// ---------------- movable panels (photoshop-style) ----------------
+function ensurePanelIds() {
+  document.querySelectorAll('.layout .card, .layout .stagecard').forEach(el => {
+    if (el.id) return;
+    const h = el.querySelector('h2');
+    const slug = h ? h.textContent.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') : 'stage';
+    el.id = 'panel-' + (slug || 'x');
+  });
+}
+function restoreLayout(layout) {
+  if (!Array.isArray(layout)) return;
+  const cols = [...document.querySelectorAll('.layout > aside, .layout > section')];
+  layout.forEach((ids, ci) => {
+    const col = cols[ci];
+    if (!col || !Array.isArray(ids)) return;
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (el && (el.classList.contains('card') || el.classList.contains('stagecard'))) col.appendChild(el);
+    });
+  });
+}
+function enablePanelDrag() {
+  document.querySelectorAll('.layout .card, .layout .stagecard').forEach(el => {
+    const head = el.querySelector('h2') || el.querySelector('.stagetool');
+    if (!head || head.querySelector('.grip')) return;
+    const g = document.createElement('span');
+    g.className = 'grip'; g.textContent = '⠿⠿'; g.title = 'drag to move this panel';
+    head.insertBefore(g, head.firstChild);
+    g.addEventListener('pointerdown', e => startPanelDrag(e, el));
+  });
+}
+function startPanelDrag(e, el) {
+  if (e.button !== undefined && e.button !== 0) return;
+  e.preventDefault();
+  const r = el.getBoundingClientRect();
+  const dx = e.clientX - r.left, dy = e.clientY - r.top;
+  const ghost = el.cloneNode(true);
+  ghost.classList.add('panel-ghost');
+  ghost.style.width = r.width + 'px';
+  ghost.removeAttribute('id');
+  document.body.appendChild(ghost);
+  const moveGhost = (x, y) => { ghost.style.left = (x - dx) + 'px'; ghost.style.top = (y - dy) + 'px'; };
+  moveGhost(e.clientX, e.clientY);
+  const ph = document.createElement('div');
+  ph.className = 'panel-ph';
+  ph.style.height = el.offsetHeight + 'px';
+  el.parentNode.insertBefore(ph, el);
+  el.style.display = 'none';
+  const cols = [...document.querySelectorAll('.layout > aside, .layout > section')];
+  const onMove = (ev) => {
+    moveGhost(ev.clientX, ev.clientY);
+    const t = document.elementFromPoint(ev.clientX, ev.clientY);
+    const col = t && t.closest ? t.closest('.layout > aside, .layout > section') : null;
+    if (!col || cols.indexOf(col) < 0) return;
+    const kids = [...col.children].filter(k => k !== ph && (k.classList.contains('card') || k.classList.contains('stagecard')));
+    let placed = false;
+    for (const k of kids) {
+      const kr = k.getBoundingClientRect();
+      if (ev.clientY < kr.top + kr.height / 2) { col.insertBefore(ph, k); placed = true; break; }
+    }
+    if (!placed) col.appendChild(ph);
+  };
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+    ph.parentNode.insertBefore(el, ph);
+    ph.remove();
+    ghost.remove();
+    el.style.display = '';
+    saveNow();
+  };
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onUp);
+}
+
 // ---------------- wire up ----------------
 function bindRange(id, fn) {
   const el = $(id);
   el.addEventListener('input', () => fn(+el.value));
 }
 function init() {
-  renderAlgoList(''); updateAlgoPanel(); renderStacks(); renderPaletteGrid(); renderCustomEditor();
+  const saved = loadSaved();
+  if (saved) applySaved(saved);
+  ensurePanelIds();
+  restoreLayout(saved && saved.layout);
+  enablePanelDrag();
+  renderAlgoList(''); updateAlgoPanel(); renderStacks(); renderLayerStack(); renderPaletteGrid(); renderCustomEditor();
 
   // presets
   PRESETS.forEach(p => {
     const b = document.createElement('button');
     b.className = 'preset'; b.textContent = p.name;
-    b.onclick = () => applyPreset(p);
+    b.onclick = () => togglePreset(p);
+    p._btn = b;
     $('presetRow').appendChild(b);
   });
 
@@ -688,14 +1024,56 @@ function init() {
   bindRange('satRange', (v) => { state.qSat = v; $('satVal').textContent = v + '%'; requestRender(); });
   $('serpChk').onchange = (e) => { state.serpentine = e.target.checked; requestRender(); };
   $('temporalChk').onchange = (e) => {
-    state.temporal = e.target.checked;
+    setTemporal(e.target.checked);
+  };
+  $('temporalChk').checked = state.temporal;
+  const syncMotionBtn = () => {
+    const b = $('motionBtn');
+    if (b) b.textContent = state.temporal ? 'Motion: on' : 'Motion: off';
+  };
+  $('motionBtn').onclick = () => setTemporal(!state.temporal);
+  function setTemporal(v) {
+    state.temporal = v;
+    $('temporalChk').checked = v;
+    syncMotionBtn();
     stopAnimLoop();
     if (state.srcKind === 'video' || state.temporal) startAnimLoop();
     requestRender();
-  };
+  }
+  syncMotionBtn();
   $('seedRange').addEventListener('input', (e) => { state.seed = +e.target.value; $('seedVal').textContent = e.target.value; requestRender(); });
-  $('zoomSel').onchange = (e) => { state.zoom = e.target.value; applyZoom(); };
-  $('exportSizeSel').onchange = (e) => { state.exportSize = e.target.value; };
+  const zoomCenter = (f) => {
+    const wr = $('stageWrap').getBoundingClientRect();
+    zoomAt(wr.left + wr.width / 2, wr.top + wr.height / 2, f);
+  };
+  $('zoomInBtn').onclick = () => zoomCenter(1.25);
+  $('zoomOutBtn').onclick = () => zoomCenter(1 / 1.25);
+  $('zoomFitBtn').onclick = () => { state.zoomMode = 'fit'; applyZoom(false); scheduleSave(); };
+  $('zoom100Btn').onclick = () => { state.zoomMode = 'manual'; state.zoomScale = 1; applyZoom(false); scheduleSave(); };
+  window.addEventListener('resize', () => { if (sourceReady && state.zoomMode === 'fit') applyZoom(false); });
+  // scroll to zoom (keeps viewport center), drag to pan
+  $('stageWrap').addEventListener('wheel', (e) => {
+    if (!sourceReady) return;
+    e.preventDefault();
+    const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+    zoomAt(e.clientX, e.clientY, Math.pow(1.0015, -dy));
+  }, { passive: false });
+  (() => {
+    const wrap = $('stageWrap');
+    let dragging = false, sx = 0, sy = 0, sl = 0, sTop = 0;
+    wrap.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      dragging = true; sx = e.clientX; sy = e.clientY; sl = wrap.scrollLeft; sTop = wrap.scrollTop;
+      wrap.classList.add('panning');
+    });
+    window.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      wrap.scrollLeft = sl - (e.clientX - sx);
+      wrap.scrollTop = sTop - (e.clientY - sy);
+    });
+    window.addEventListener('pointerup', () => { dragging = false; wrap.classList.remove('panning'); });
+  })();
+  $('exportSizeSel').onchange = (e) => { state.exportSize = e.target.value; scheduleSave(); };
 
   $('algoSearch').addEventListener('input', (e) => renderAlgoList(e.target.value));
   $('kernelText').addEventListener('input', (e) => { state.kernelText = e.target.value; requestRender(); });
@@ -708,6 +1086,7 @@ function init() {
   Object.keys(POST_DEFS).forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = POST_DEFS[k].name; postSel.appendChild(o); });
   $('preAddBtn').onclick = () => addEffect('pre', preSel.value);
   $('postAddBtn').onclick = () => addEffect('post', postSel.value);
+  $('addLayerBtn').onclick = addLayer;
 
   // custom palette
   $('addColorBtn').onclick = () => { state.customColors.push('#888888'); renderCustomEditor(); renderPaletteGrid(); requestRender(); };
@@ -715,11 +1094,13 @@ function init() {
   $('extractCount').addEventListener('input', (e) => { state.extractCount = +e.target.value; $('extractCountVal').textContent = e.target.value; });
   $('copyPalBtn').onclick = () => {
     const pal = activePalette();
+    if (pal.levels) { toast('Truecolor has no fixed list to copy'); return; }
     const txt = pal.colors.join('\n');
     navigator.clipboard.writeText(txt).then(() => toast('Palette copied'), () => toast('Copy blocked'));
   };
   $('dlPalBtn').onclick = () => {
     const pal = activePalette();
+    if (pal.levels) { toast('Truecolor has no fixed list to save'); return; }
     let out = 'GIMP Palette\nName: ' + pal.name + '\n';
     pal.colors.forEach(c => { const rgb = E.hexToRgb(c); out += rgb[0] + ' ' + rgb[1] + ' ' + rgb[2] + ' ' + c + '\n'; });
     const blob = new Blob([out], { type: 'text/plain' });
@@ -766,15 +1147,27 @@ function init() {
   });
   vidEl.addEventListener('seeked', () => { if (vidEl.paused) requestRender(); });
 
-  // defaults
-  $('detailRange').value = state.detail; $('cellRange').value = state.cell;
-  $('strengthRange').value = 100; $('glitchRange').value = 60;
-  $('extractCount').value = state.extractCount;
+  // defaults (restored memory or factory state)
+  $('detailRange').value = state.detail; $('detailVal').textContent = state.detail + 'px';
+  $('cellRange').value = state.cell; $('cellVal').textContent = state.cell + 'px';
+  $('strengthRange').value = Math.round(state.strength * 100); $('strengthVal').textContent = Math.round(state.strength * 100) + '%';
+  $('glitchRange').value = Math.round(state.glitch * 100); $('glitchVal').textContent = Math.round(state.glitch * 100) + '%';
+  $('brightRange').value = state.qBright; $('brightVal').textContent = state.qBright;
+  $('contrRange').value = state.qContr; $('contrVal').textContent = state.qContr;
+  $('satRange').value = state.qSat; $('satVal').textContent = state.qSat + '%';
+  $('serpChk').checked = state.serpentine;
+  $('seedRange').value = state.seed; $('seedVal').textContent = state.seed;
+  $('exportSizeSel').value = state.exportSize;
+  $('kernelText').value = state.kernelText;
+  $('kernelDiv').value = state.kernelDiv; $('kernelDivVal').textContent = state.kernelDiv;
+  $('bayerSel').value = String(state.bayerSize);
+  $('extractCount').value = state.extractCount; $('extractCountVal').textContent = state.extractCount;
   const sel = document.querySelector('.pal.sel');
   if (sel) sel.scrollIntoView({ block: 'nearest' });
 }
 
 document.addEventListener('DOMContentLoaded', init);
+window.addEventListener('beforeunload', saveNow);
 
 // debug / test handle + power-user API
 window.DitherBuddy = {
